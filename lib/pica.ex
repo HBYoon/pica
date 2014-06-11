@@ -13,7 +13,7 @@ defmodule Pica do
   @versionByte 2
   @versionBit  @versionByte * 8
   @idFix       "pica"
-  @fixByte     size(@idFix) + @versionByte
+  @fixByte     byte_size(@idFix) + @versionByte
   @fixBit      @fixByte * 8
   
   ## /version(2), pica(4), 0(2), 0(24)
@@ -31,7 +31,7 @@ defmodule Pica do
   @offsetBit   @offsetByte * 8
   
   ## by practical reason, limitation of subKeyBit will be sub 20
-  @subKeyBit   17
+  @subKeyBit   18
   @keyBit      @subKeyBit * 2
   @maxKey      Erlang.trunc(Math.pow(2, @subKeyBit))
   @maxPk       @maxKey * @maxKey
@@ -47,103 +47,21 @@ defmodule Pica do
                       dOff: 0,
                       file: nil ]
   
-  """
-  # test function
-  
-  # defp debug(term), do: :io.format('debug>>< ~p~n', [term])
-  
-  def loop_test(name, n) do
-    {:ok, pica} = Pica.open name
-    start = Pica.current_pk(pica)
-    
-    :io.format 'test start from ~p ~n', [start]
-    
-    {t1, {:ok, pica}} = :timer.tc fn() ->
-      do_loop_append_test(pica, name, :crypto.strong_rand_bytes(2048), start, n, 0)
-    end
-    :io.format 'append loop end>> ~p~n', [t1]
-    
-    {t2, _} = :timer.tc fn() ->
-      do_check_test(pica, start, 0, n)
-    end
-    :io.format 'get loop end>> ~p~n', [t2]
-    
-    {t3, result} = :timer.tc fn() ->
-      m_read_test(pica, name, start, 0)
-    end
-    :io.format 'm_get loop end>> ~p~n', [{t3, result}]
-    
-    {:ok, pica}
-  end
-  
-  def do_loop_append_test(pica,_name,_bin,_start, 0,_v), do: {:ok, pica}
-  def do_loop_append_test(pica, name, bin, start, n, v) do
-    data = {v, :binary.part( bin, 0, :crypto.rand_uniform(1, 1024) )}
-    dPack = Erlang.term_to_binary(data)
-    crc = Erlang.crc32 dPack
-    {:ok, pica} = Pica.append pica, <<crc::32, dPack::binary>>
-    if rem(n, 4500) == 0 do
-      Pica.close(pica)
-      {:ok, pica} = Pica.open(name)
-      
-      # debug {:new_pica_write, pica}
-      
-      do_loop_append_test(pica, name, bin, start, n-1, v+1)
-    else
-      do_loop_append_test(pica, name, bin, start, n-1, v+1)
-    end
-  end
-  
-  def do_check_test(_p, _s, v, v), do: :ok
-  def do_check_test(pica, start, v, vv) do
-  
-    {:ok, [b]} = Pica.get pica, (start + v)
-    
-    vector = v
-    
-    {^vector, _bin} = d_check(b)
-    do_check_test(pica, start, v+1, vv)
-  end
   
   
-  def m_read_test(p, n, s, v, c\\0) do
-    if (s+v+1001) < @maxPk do
-      case Pica.get(p, {s+v, s+v+500}) do
-        {:ok, []} -> {:ok, v - 1}
-        {:ok, list} -> 
-          # debug Erlang.length(list)
-          v = check_m_read_test(list, v)
-          
-          if rem(c, 500) == 0 do
-            Pica.close(p)
-            {:ok, p} = Pica.open(n)
-            
-            # debug {:new_pica_read, p}
-            
-            m_read_test(p, n, s, v, c+1)
-          else
-            m_read_test(p, n, s, v, c+1)
-          end
+  ## macro
+  defmacrop return_err(result, whenOk) do
+    {_, doBlock} = L.keyfind(:do, 1, whenOk)
+    quote do 
+      case unquote(result) do
+        {:error, reason} -> 
+          {:error, reason}
+        _ok -> 
+          unquote(doBlock)
       end
-    else
-      {:ok, list} = Pica.get(p, {s+v, @maxPk - 1})
-      check_m_read_test(list, v) - 1
     end
   end
   
-  def check_m_read_test([], v), do: v
-  def check_m_read_test([b|tail], v) do
-    vector = v
-    {^vector, _bin} = d_check(b)
-    check_m_read_test(tail, v+1)
-  end
-  
-  defp d_check(<<crc::32, d::binary>>) do
-    ^crc = Erlang.crc32(d)
-    Erlang.binary_to_term(d)
-  end
-  
-  """
   
   
   def close(pica_rec( file: fd )), 
@@ -152,20 +70,26 @@ defmodule Pica do
   @doc"""
     append data to pica file
   """
-  def append( pica_rec( block: b, data: d, bOff: bof, dOff: dof, file: fd ) = pica, data) 
+  def append( pica_rec( file: fd ) = pica, data) do
+    case do_append(pica, data) do
+      {:error, reason} -> 
+        F.close(fd)
+        {:error, reason}
+      ok -> ok
+    end
+  end
+  def do_append( pica_rec( block: b, data: d, bOff: bof, dOff: dof, file: fd ) = pica, data) 
   when d < @maxKey and b < @maxKey do
-    nextOff = dof + size(data)
+    nextOff = dof + byte_size(data)
     
     dataWriter = {bof + dof, data}
     posWriter  = {calc_offset_pos(bof, d), pack_offset(nextOff)}
     
-    case F.pwrite(fd, [dataWriter, posWriter]) do
-      {:error, reason} -> {:error, reason}
-      :ok -> pica_rec(pica, [ data: d+1, dOff: nextOff ]) |> fin_append
-    end
+    return_err F.pwrite(fd, [dataWriter, posWriter]), 
+      do: pica_rec(pica, [ data: d+1, dOff: nextOff ]) |> fin_append
   end
   
-  def append(_pica,_data), 
+  def do_append(_pica,_data), 
     do: {:error, :eof}
   
   ## append next block
@@ -177,13 +101,11 @@ defmodule Pica do
     blockWriter = {calc_offset_pos(0, b), pack_offset(nextOffset)}
     headerSet = {nextOffset + @fullHeader, [0]}
     
-    case F.pwrite(fd, [headerSet, blockWriter]) do
-      {:error, reason} -> {:error, reason}
-      :ok -> {:ok, pica_rec(pica, [ block: nextBlock, 
-                                    data: 0, 
-                                    bOff: nextOffset, 
-                                    dOff: @fullHeader ])}
-    end
+    return_err F.pwrite(fd, [headerSet, blockWriter]), 
+      do: {:ok, pica_rec(pica, [ block: nextBlock, 
+                                 data: 0, 
+                                 bOff: nextOffset, 
+                                 dOff: @fullHeader ])}
   end
   
   ## normal or pk overflow
@@ -195,27 +117,45 @@ defmodule Pica do
   defp pack_offset(crc, n), 
     do: <<crc:: @crcBit, n:: @offBit, 0:: @offsetBit>>
   
+  
   @doc"""
     set the pica record to rollback position
     {:ok, pica}
   """
   def past_to(pica_rec( file: fd ), pk) do
-    {h, t} = to_subk(pk)
-    
-    case read_address(fd, {pk, pk}) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, [{b, offset, [{d, start}, {_,_fin}]}]} -> 
-        ^pk = to_pk(b, d)
-        {:ok, pica_rec( block: h, 
-                        data: t, 
-                        bOff: offset, 
-                        dOff: start, 
-                        file: fd )}
-      _eof -> 
-        {:error, :eof}
-    end
+    return_err {_, addr} = read_address(fd, {pk, pk}), 
+      do: do_past_to(addr, fd, pk)
   end
+  
+  defp do_past_to([{b, offset, [{d, start}, {_,_fin}]}], fd, pk) do
+    ^pk = to_pk(b, d)
+    {h, t} = to_subk(pk)
+    {:ok, pica_rec( block: h, 
+                    data: t, 
+                    bOff: offset, 
+                    dOff: start, 
+                    file: fd )}
+  end
+  
+  defp do_past_to(_any, _fd, _pk), do: {:error, :eof}
+  
+  
+  
+  def get_address(pica_rec( file: fd ), pk), 
+    do: get_address(fd, pk)
+  def get_address(fd, {from, to}) do
+    return_err {_, addr} = do_get_address(fd, {from, to}),
+      do: {:ok, L.flatten(addr)}
+  end
+  def get_address(fd, pk), 
+    do: get_address(fd, {pk, pk})
+  
+  defp do_get_address(fd, {from, to}) do
+    return_err {_,addr} = read_address(fd, {from, to}), 
+      do: {:ok, flatten_addr(addr, [])}
+  end
+  
+  
   
   @doc"""
     {:ok, [data]}
@@ -223,25 +163,15 @@ defmodule Pica do
   def get(pica_rec( file: fd ), pk), 
     do: get(fd, pk)
   def get(fd, {from, to}) do
-    case read_address(fd, {from, to}) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, addr} ->
-        multi_read(fd, addr)
-    end
+    return_err {_, addr} = do_get_address(fd, {from, to}), 
+      do: multi_read(fd, addr)
   end
-  def get(fd, pk) do
-    get(fd, {pk, pk})
-  end
+  def get(fd, pk), 
+    do: get(fd, {pk, pk})
   
   defp multi_read(fd, addr) do
-    flatAddr = flatten_addr(addr, [])
-    case calc_disk_addr(flatAddr, []) |> read_disk(fd, []) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, data} -> 
-        {:ok, L.flatten(data)}
-    end
+    return_err {_, data} = (calc_disk_addr(addr, []) |> read_disk(fd, [])), 
+      do: {:ok, L.flatten(data)}
   end
   
   ## {block, bOff, [{data, dOff}]} -> [ [{position, length}] ]
@@ -255,14 +185,14 @@ defmodule Pica do
   
   defp start_do_flatten_addr([], _off), 
     do: []
-  defp start_do_flatten_addr([{_p, off}|tail], offset), 
+  defp start_do_flatten_addr([{_p, off} | tail], offset), 
     do: do_flatten_addr(tail, offset, [{off + offset, nil}])
     
   defp do_flatten_addr([], _off, result), 
     do: L.reverse(result)
-  defp do_flatten_addr([{_p, off}|tail], offset, [{dof, nil} | result]) do
+  defp do_flatten_addr([{_p, off} | tail], offset, [{dof, nil} | result]) do
     nextOff = off + offset
-    do_flatten_addr(tail, offset, [{nextOff, nil} | [{dof, nextOff - dof} | result]])
+    do_flatten_addr(tail, offset, [{nextOff, nil}, {dof, nextOff - dof} | result])
   end
   
   ## [ [{position, length}] ] -> [{position, groupLength, [dataLength]}]
@@ -294,12 +224,9 @@ defmodule Pica do
   defp read_disk([], _fd, result), 
     do: {:ok, L.reverse(result)}
   defp read_disk([{{start, len}, lenList} | tail], fd, result) do
-    case F.pread(fd, start, len) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, bin} ->
-        dataList = split_bin(lenList, bin, [])
-        read_disk(tail, fd, [dataList | result])
+    return_err {_, bin} = F.pread(fd, start, len) do
+      dataList = split_bin(lenList, bin, [])
+      read_disk(tail, fd, [dataList | result])
     end
   end
   
@@ -312,8 +239,6 @@ defmodule Pica do
   
   
   
-  
-  
   @doc """
     open a writing descriptor in last state. 
     for read working, use normal erlang file descriptor with raw and binary options.
@@ -321,75 +246,62 @@ defmodule Pica do
   """
   def open(path) do
     append_to = Flib.is_file(path)
-    case F.open(path, [:read, :write, :raw, :binary]) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, fd} -> 
-        fin_open(append_to, fd)
+    return_err {_, fd} = F.open(path, [:read, :write, :raw, :binary]) do
+      case do_open(append_to, fd) do
+        {:error, reason} -> 
+          F.close(fd)
+          {:error, reason}
+        ok -> ok
+      end
     end
+    
   end
   
-  defp fin_open(true,  fd), do: append_file(fd)
-  defp fin_open(false, fd), do: new_file(fd)
+  defp do_open(true,  fd), do: set_append_file(fd)
+  defp do_open(false, fd), do: set_new_file(fd)
   
-  defp new_file(fd) do
-    case F.pwrite(fd, [ {0, <<@version:: @versionBit, @idFix, 0:: @fhBit>>}, 
-                        {(@fullHeader * 2) - @fixByte, [0]} ]) do
-      {:error, reason} -> 
-        F.close(fd)
-        {:error, reason}
-      :ok -> 
-        {:ok, pica_rec([ block: 0, 
-                         data: 0, 
-                         bOff: @fullHeader, 
-                         dOff: @fullHeader, 
-                         file: fd])}
-    end
+  defp set_new_file(fd) do
+    return_err F.pwrite(fd, [ {0, <<@version:: @versionBit, @idFix, 0:: @fhBit>>}, 
+                              {(@fullHeader * 2) - @fixByte, [0]} ]), 
+      do: {:ok, pica_rec([ block: 0, 
+                           data: 0, 
+                           bOff: @fullHeader, 
+                           dOff: @fullHeader, 
+                           file: fd])}
   end
   
   
-  defp append_file(fd) do
-    case F.pread(fd, 0, @header) do
-      {:error, reason} ->
-        F.close(fd)
-        {:error, reason}
-      {:ok, bin}->
-        check_append_file(bin, fd)
-    end
+  defp set_append_file(fd) do
+    return_err {_, bin} = F.pread(fd, 0, @header), 
+      do: check_append_file(bin, fd)
   end
   
   defp check_append_file(<<@version:: @versionBit, @idFix, _opts::binary>>, fd) do
-    case get_last(fd) do
-      {:error, reason} -> {:error, reason}
-      {:ok, {{lb, bOff}, {ld, dOff}}} -> pica_rec( block: lb, 
-                                                   data: ld, 
-                                                   bOff: bOff, 
-                                                   dOff: dOff, 
-                                                   file: fd ) |> fin_append
+    return_err {_, result} = get_last(fd) do
+      {{lb, bOff}, {ld, dOff}} = result
+      pica_rec( block: lb, 
+                data: ld, 
+                bOff: bOff, 
+                dOff: dOff, 
+                file: fd ) |> fin_append
     end
   end
+  
   defp check_append_file(_,_),
     do: {:error, :undefined}
-    
+  
+  
   @doc"""
     {:ok, {{blockKey, blockOffset}, {dataKey, dataOffset}}}
   """
   def get_last(fd) do
-    case read_offset(fd, 0, {0, @maxKey}) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, blockList} ->
-        L.last(blockList) |> get_last_data_offset(fd)
-    end
+    return_err {_, blockList} = read_offset(fd, 0, {0, @maxKey}),
+      do: L.last(blockList) |> get_last_data_offset(fd)
   end
   
   defp get_last_data_offset({_, offset} = blc, fd) do
-    case read_offset(fd, offset, {0, @maxKey}) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, dataOffList} ->
-        {:ok, {blc, L.last(dataOffList)}}
-    end
+    return_err {_, dataOffList} = read_offset(fd, offset, {0, @maxKey}), 
+      do: {:ok, {blc, L.last(dataOffList)}}
   end
   
   
@@ -436,28 +348,19 @@ defmodule Pica do
   defp read_data_offset([], _fd, result), 
     do: {:ok, result}
   defp read_data_offset([{block, off, key} | tail], fd, result) do
-    case read_offset(fd, off, key) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, dataAddr} -> 
-        read_data_offset(tail, fd, [{block, off, dataAddr} | result])
-    end
+    return_err {_, dataAddr} = read_offset(fd, off, key),
+      do: read_data_offset(tail, fd, [{block, off, dataAddr} | result])
   end
   
   ## read offset from selected offset positioned block
   ## [{key, offset}]
   defp read_offset(fd, offset, {from, _} = key) do
-    case read_raw_offset(fd, offset, key) do
-      {:error, reason} -> 
-        {:error, reason}
-      {:ok, bin} -> 
-        {:ok, revise_offset_binary(bin, key)
-              |> check_and_build_offset_list(from, [])}
-    end
+    return_err {_, bin} = read_raw_offset(fd, offset, key), 
+      do: {:ok, revise_offset_binary(bin, key) |> check_and_build_offset_list(from, [])}
   end
   
   ## insert 0 offset when requested 0
-  defp revise_offset_binary(bin, {0, _})do 
+  defp revise_offset_binary(bin, {0, _}) do 
     crc = Erlang.crc32( <<@fullHeader :: @offBit>> )
     off0 = <<crc:: @crcBit, @fullHeader:: @offBit>>
     <<off0:: binary, bin:: binary>>
@@ -519,3 +422,96 @@ defmodule Pica do
     do: offset + @header + (count * @offsetByte) 
   
 end
+
+
+"""
+defmodule Pica.Test do
+
+  def start(name, n) do
+    {:ok, pica} = Pica.open name
+    start = Pica.current_pk(pica)
+    
+    :io.format 'test start from ~p ~n', [start]
+    
+    {t1, {:ok, pica}} = :timer.tc fn() ->
+      do_loop_append_test(pica, name, :crypto.strong_rand_bytes(2048), start, n, 0)
+    end
+    :io.format 'append loop end>> ~p~n', [t1]
+    
+    {t2, _} = :timer.tc fn() ->
+      do_check_test(pica, start, 0, n)
+    end
+    :io.format 'get loop end>> ~p~n', [t2]
+    
+    {t3, result} = :timer.tc fn() ->
+      m_read_test(pica, name, start, 0)
+    end
+    :io.format 'm_get loop end>> ~p~n', [{t3, result}]
+    
+    {:ok, pica}
+  end
+  
+  def do_loop_append_test(pica,_name,_bin,_start, 0,_v), do: {:ok, pica}
+  def do_loop_append_test(pica, name, bin, start, n, v) do
+    data = {v, :binary.part( bin, 0, :crypto.rand_uniform(1, 1024) )}
+    dPack = Erlang.term_to_binary(data)
+    crc = Erlang.crc32 dPack
+    {:ok, pica} = Pica.append pica, <<crc::32, dPack::binary>>
+    if rem(n, 4500) == 0 do
+      Pica.close(pica)
+      {:ok, pica} = Pica.open(name)
+      
+      do_loop_append_test(pica, name, bin, start, n-1, v+1)
+    else
+      do_loop_append_test(pica, name, bin, start, n-1, v+1)
+    end
+  end
+  
+  def do_check_test(_p, _s, v, v), do: :ok
+  def do_check_test(pica, start, v, vv) do
+  
+    {:ok, [b]} = Pica.get pica, (start + v)
+    
+    vector = v
+    
+    {^vector, _bin} = d_check(b)
+    do_check_test(pica, start, v+1, vv)
+  end
+  
+  
+  def m_read_test(p, n, s, v, c\\0) do
+    if (s+v+1001) < @maxPk do
+      case Pica.get(p, {s+v, s+v+500}) do
+        {:ok, []} -> {:ok, v - 1}
+        {:ok, list} -> 
+          v = check_m_read_test(list, v)
+          
+          if rem(c, 500) == 0 do
+            Pica.close(p)
+            {:ok, p} = Pica.open(n)
+            
+            m_read_test(p, n, s, v, c+1)
+          else
+            m_read_test(p, n, s, v, c+1)
+          end
+      end
+    else
+      {:ok, list} = Pica.get(p, {s+v, @maxPk - 1})
+      check_m_read_test(list, v) - 1
+    end
+  end
+  
+  def check_m_read_test([], v), do: v
+  def check_m_read_test([b|tail], v) do
+    vector = v
+    {^vector, _bin} = d_check(b)
+    check_m_read_test(tail, v+1)
+  end
+  
+  defp d_check(<<crc::32, d::binary>>) do
+    ^crc = Erlang.crc32(d)
+    Erlang.binary_to_term(d)
+  end
+
+end
+"""
