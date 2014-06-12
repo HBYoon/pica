@@ -50,18 +50,17 @@ defmodule Pica do
   
   
   ## macro
-  defmacrop return_err(result, whenOk) do
-    {_, doBlock} = L.keyfind(:do, 1, whenOk)
-    quote do 
-      case unquote(result) do
-        {:error, reason} -> 
-          {:error, reason}
-        _ok -> 
-          unquote(doBlock)
-      end
+  defmacrop return_err(result, whenOkCase) do
+    errCase = {:'->', [], [ [{:error, {:reason, [], nil}}], 
+                             {:error, {:reason, [], nil}} ]}
+    
+    withErrCase = case L.keyfind(:do, 1, whenOkCase) do
+      {:do, other = [{:'->', _, _} | _]} -> [errCase | other]
+      {:do, other} -> [errCase, {:'->',[],[ [{:_,[],nil}], other ]}]
     end
+    
+    quote do: ( case unquote(result), do: unquote(withErrCase) )
   end
-  
   
   @doc"""
     close file
@@ -118,21 +117,18 @@ defmodule Pica do
     {:ok, pica}
   """
   def past_to(pica_rec( file: fd ), pk) do
-    return_err {_, addr} = read_address(fd, {pk, pk}), 
-      do: do_past_to(addr, fd, pk)
+    return_err read_address(fd, {pk, pk}) do
+      {:ok, [{b, offset, [{d, start}, {_,_fin}]}]} ->
+        ^pk = to_pk(b,d)
+        {h, t} = to_subk(pk)
+        {:ok, pica_rec( block: h, 
+                        data: t, 
+                        bOff: offset, 
+                        dOff: start, 
+                        file: fd )}
+      _other -> {:error, :eof}
+    end
   end
-  
-  defp do_past_to([{b, offset, [{d, start}, {_,_fin}]}], fd, pk) do
-    ^pk = to_pk(b, d)
-    {h, t} = to_subk(pk)
-    {:ok, pica_rec( block: h, 
-                    data: t, 
-                    bOff: offset, 
-                    dOff: start, 
-                    file: fd )}
-  end
-  
-  defp do_past_to(_any, _fd, _pk), do: {:error, :eof}
   
   
   @doc"""
@@ -141,8 +137,8 @@ defmodule Pica do
   def get_location(pica_rec( file: fd ), pk), 
     do: get_location(fd, pk)
   def get_location(fd, {from, to}) do
-    return_err {_, loc} = do_get_location(fd, {from, to}),
-      do: {:ok, L.flatten(loc)}
+    return_err do_get_location(fd, {from, to}),
+      do: ( {:ok, loc} -> {:ok, L.flatten(loc)} )
   end
   def get_location(fd, pk) when is_integer(pk), 
     do: get_location(fd, {pk, pk})
@@ -151,16 +147,16 @@ defmodule Pica do
   
   defp get_location(_f, [], result), do: {:ok, L.reverse(result)}
   defp get_location(fd, [h | t], result) do
-    return_err {_, loc} = get_location(fd, h), 
-      do: get_location(fd, t, r_join(loc, result))
+    return_err get_location(fd, h), 
+      do: ( {:ok, loc} -> get_location(fd, t, r_join(loc, result)) )
   end
   
   defp r_join([h|t], r), do: r_join(t, [h|r])
   defp r_join([], r), do: r
   
   defp do_get_location(fd, {from, to}) do
-    return_err {_,addr} = read_address(fd, {from, to}), 
-      do: {:ok, calc_location(addr, [])}
+    return_err read_address(fd, {from, to}), 
+      do: ( {:ok, addr} -> {:ok, calc_location(addr, [])} )
   end
   
   
@@ -194,17 +190,17 @@ defmodule Pica do
   def get(pica_rec( file: fd ), pk), 
     do: get(fd, pk)
   def get(fd, {from, to}) do
-    return_err {_, loc} = do_get_location(fd, {from, to}), 
-      do: multi_read(fd, loc)
+    return_err do_get_location(fd, {from, to}), 
+      do: ( {:ok, loc} ->  multi_read(fd, loc) )
   end
   def get(fd, pk) do
-    return_err {_, loc} = get_location(fd, pk), 
-      do: F.pread(fd, loc)
+    return_err get_location(fd, pk), 
+      do: ( {:ok, loc} -> F.pread(fd, loc) )
   end
   
   defp multi_read(fd, loc) do
-    return_err {_, data} = (calc_file_offset(loc, []) |> read_file(fd, [])), 
-      do: {:ok, L.flatten(data)}
+    return_err ( calc_file_offset(loc, []) |> read_file(fd, []) ), 
+      do: ( {:ok, data} -> {:ok, L.flatten(data)} )
   end
   
   ## [ [{position, length}] ] -> [{position, groupLength, [dataLength]}]
@@ -234,9 +230,10 @@ defmodule Pica do
   defp read_file([], _fd, result), 
     do: {:ok, L.reverse(result)}
   defp read_file([{start, len, lenList} | tail], fd, result) do
-    return_err {_, bin} = F.pread(fd, start, len) do
-      dataList = split_bin(lenList, bin, [])
-      read_file(tail, fd, [dataList | result])
+    return_err F.pread(fd, start, len) do
+      {:ok, bin} ->
+        dataList = split_bin(lenList, bin, [])
+        read_file(tail, fd, [dataList | result])
     end
   end
   
@@ -256,13 +253,14 @@ defmodule Pica do
   """
   def open(path) do
     append_to = Flib.is_file(path)
-    return_err {_, fd} = F.open(path, [:read, :write, :raw, :binary]) do
-      case do_open(append_to, fd) do
-        {:error, reason} -> 
-          F.close(fd)
-          {:error, reason}
-        ok -> ok
-      end
+    return_err F.open(path, [:read, :write, :raw, :binary]) do
+      {:ok, fd} -> 
+        case do_open(append_to, fd) do
+          {:error, reason} -> 
+            F.close(fd)
+            {:error, reason}
+          ok -> ok
+        end
     end
     
   end
@@ -282,18 +280,19 @@ defmodule Pica do
   
   
   defp set_append_file(fd) do
-    return_err {_, bin} = F.pread(fd, 0, @header), 
-      do: check_append_file(bin, fd)
+    return_err F.pread(fd, 0, @header), 
+      do: ( {:ok, bin} -> check_append_file(bin, fd) )
   end
   
   defp check_append_file(<<@version:: @versionBit, @idFix, _opts::binary>>, fd) do
-    return_err {_, result} = get_last(fd) do
-      {{lb, bOff}, {ld, dOff}} = result
-      pica_rec( block: lb, 
-                data: ld, 
-                bOff: bOff, 
-                dOff: dOff, 
-                file: fd ) |> fin_append
+    return_err get_last(fd) do
+      {:ok, result} ->
+        {{lb, bOff}, {ld, dOff}} = result
+        pica_rec( block: lb, 
+                  data: ld, 
+                  bOff: bOff, 
+                  dOff: dOff, 
+                  file: fd ) |> fin_append
     end
   end
   
@@ -305,13 +304,15 @@ defmodule Pica do
     {:ok, {{blockKey, blockOffset}, {dataKey, dataOffset}}}
   """
   def get_last(fd) do
-    return_err {_, blockList} = read_offset(fd, 0, {0, @maxKey}),
-      do: L.last(blockList) |> get_last_data_offset(fd)
+    return_err read_offset(fd, 0, {0, @maxKey}) do
+      {:ok, blockList} -> 
+        L.last(blockList) |> get_last_data_offset(fd)
+    end
   end
   
   defp get_last_data_offset({_, offset} = blc, fd) do
-    return_err {_, dataOffList} = read_offset(fd, offset, {0, @maxKey}), 
-      do: {:ok, {blc, L.last(dataOffList)}}
+    return_err read_offset(fd, offset, {0, @maxKey}), 
+      do: ( {:ok, dataOffList} -> {:ok, {blc, L.last(dataOffList)}} )
   end
   
   
@@ -345,28 +346,31 @@ defmodule Pica do
   defp read_block_offset([], fd, result),
     do: read_data_offset(result, fd, [])
   defp read_block_offset([{block, from, to} | tail], fd, result) do
-    case read_offset(fd, 0, {block, block}) do
-      {:error, reason} -> 
-        {:error, reason}
+    return_err read_offset(fd, 0, {block, block}) do
       {:ok, [{^block, offset}|_]} -> 
         read_block_offset(tail, fd, [{block, offset, {from, to}} | result])
       _other -> 
-        read_block_offset([], fd, result)
+        read_block_offset([], fd, result) 
     end
   end
   
   defp read_data_offset([], _fd, result), 
     do: {:ok, result}
   defp read_data_offset([{block, off, key} | tail], fd, result) do
-    return_err {_, dataOffset} = read_offset(fd, off, key),
-      do: read_data_offset(tail, fd, [{block, off, dataOffset} | result])
+    return_err read_offset(fd, off, key) do
+      {:ok, dataOffset} ->
+        read_data_offset(tail, fd, [{block, off, dataOffset} | result])
+    end
   end
   
   ## read offset from selected offset positioned block
   ## [{key, offset}]
   defp read_offset(fd, offset, {from, _} = key) do
-    return_err {_, bin} = read_raw_offset(fd, offset, key), 
-      do: {:ok, revise_offset_binary(bin, key) |> check_and_build_offset_list(from, [])}
+    return_err read_raw_offset(fd, offset, key) do
+      {:ok, bin} -> 
+        {:ok, revise_offset_binary(bin, key) 
+              |> check_and_build_offset_list(from, [])}
+    end
   end
   
   ## insert 0 offset when requested 0
@@ -458,15 +462,19 @@ defmodule Pica.Test do
     end
     :io.format 'append loop end>> ~p~n', [t1]
     
-    {t2, _} = :timer.tc fn() ->
-      do_check_test(pica, start, 0, n)
-    end
-    :io.format 'get loop end>> ~p~n', [t2]
     
     {t3, result} = :timer.tc fn() ->
       m_read_test(pica, name, start, 0)
     end
     :io.format 'm_get loop end>> ~p~n', [{t3, result}]
+    
+    
+    {t2, _} = :timer.tc fn() ->
+      do_check_test(pica, start, 0, n)
+    end
+    :io.format 'get loop end>> ~p~n', [t2]
+    
+    
     
     {:ok, pica}
   end
@@ -505,15 +513,7 @@ defmodule Pica.Test do
         {:ok, []} -> {:ok, v - 1}
         {:ok, list} -> 
           v = check_m_read_test(list, v)
-          
-          if rem(c, 500) == 0 do
-            Pica.close(p)
-            {:ok, p} = Pica.open(n)
-            
-            m_read_test(p, n, s, v, c+1)
-          else
-            m_read_test(p, n, s, v, c+1)
-          end
+          m_read_test(p, n, s, v, c+1)
       end
     else
       {:ok, list} = Pica.get(p, {s+v, @maxPk - 1})
