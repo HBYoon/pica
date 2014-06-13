@@ -117,7 +117,7 @@ defmodule Pica do
     {:ok, pica}
   """
   def past_to(pica_rec( file: fd ), pk) do
-    return_err read_address(fd, {pk, pk}) do
+    return_err read_address(fd, [pk]) do
       {:ok, [{b, offset, [{d, start}, {_,_fin}]}]} ->
         ^pk = to_pk(b,d)
         {h, t} = to_subk(pk)
@@ -136,26 +136,17 @@ defmodule Pica do
   """
   def get_location(pica_rec( file: fd ), pk), 
     do: get_location(fd, pk)
-  def get_location(fd, {from, to}) do
-    return_err do_get_location(fd, {from, to}),
+  def get_location(fd, pk) when is_integer(pk), 
+    do: get_location(fd, [pk])
+  def get_location(fd, {from, to}), 
+    do: get_location(fd, [{from, to}])
+  def get_location(fd, pkList) do
+    return_err do_get_location(fd, pkList),
       do: ( {:ok, loc} -> {:ok, L.flatten(loc)} )
   end
-  def get_location(fd, pk) when is_integer(pk), 
-    do: get_location(fd, {pk, pk})
-  def get_location(fd, pkList) when is_list(pkList), 
-    do: get_location(fd, pkList, [])
   
-  defp get_location(_f, [], result), do: {:ok, L.reverse(result)}
-  defp get_location(fd, [h | t], result) do
-    return_err get_location(fd, h), 
-      do: ( {:ok, loc} -> get_location(fd, t, r_join(loc, result)) )
-  end
-  
-  defp r_join([h|t], r), do: r_join(t, [h|r])
-  defp r_join([], r), do: r
-  
-  defp do_get_location(fd, {from, to}) do
-    return_err read_address(fd, {from, to}), 
+  defp do_get_location(fd, pkList) do
+    return_err read_address(fd, pkList), 
       do: ( {:ok, addr} -> {:ok, calc_location(addr, [])} )
   end
   
@@ -185,41 +176,32 @@ defmodule Pica do
   
   
   @doc"""
-    {:ok, [data]}
+    {:ok, [data]}, {:error, :eof}, {:error, posix_error()}
   """
   def get(pica_rec( file: fd ), pk), 
     do: get(fd, pk)
   def get(fd, {from, to}) do
-    return_err do_get_location(fd, {from, to}), 
-      do: ( {:ok, loc} ->  multi_read(fd, loc) )
+    return_err do_get_location(fd, [{from, to}]), 
+      do: ( {:ok, loc} ->  serial_read(fd, loc) )
   end
   def get(fd, pk) do
     return_err get_location(fd, pk), 
       do: ( {:ok, loc} -> F.pread(fd, loc) )
   end
   
-  defp multi_read(fd, loc) do
+  defp serial_read(fd, loc) do
     return_err ( calc_file_offset(loc, []) |> read_file(fd, []) ), 
       do: ( {:ok, data} -> {:ok, L.flatten(data)} )
   end
   
   ## [ [{position, length}] ] -> [{position, groupLength, [dataLength]}]
   ## for F.pread and bin_split functions
-  defp calc_file_offset([], result), 
-    do: L.reverse(result)
   defp calc_file_offset([faList | tail], result) do
-    case start_calc_in_block_offset(faList) do
-      nil     -> calc_file_offset([], result)
-      fOffset -> calc_file_offset(tail, [fOffset | result])
-    end
-  end
-  
-  ## when overflow in existing block
-  defp start_calc_in_block_offset([]), do: nil
-  defp start_calc_in_block_offset(faList = [{pos, _} | _]) do
+    [{pos, _len} | _] = faList
     {endPos, lenList} = calc_in_block_offset(faList, [])
-    {pos, endPos - pos, lenList}
+     calc_file_offset(tail, [{pos, endPos - pos, lenList} | result])
   end
+  defp calc_file_offset([], result), do: L.reverse(result)
   
   defp calc_in_block_offset([{pos, len} | []], lenList), 
     do: {pos + len, [len | lenList] |> L.reverse}
@@ -237,13 +219,11 @@ defmodule Pica do
     end
   end
   
-  defp split_bin([], _, result), 
-    do: L.reverse(result)
   defp split_bin([len|next], bin, result) do
     <<data::[binary, size(len)], tail:: binary>> = bin
     split_bin(next, tail, [data|result])
   end
-  
+  defp split_bin([], _, result), do: L.reverse(result)
   
   
   @doc """
@@ -262,7 +242,6 @@ defmodule Pica do
           ok -> ok
         end
     end
-    
   end
   
   defp do_open(true,  fd), do: set_append_file(fd)
@@ -278,10 +257,11 @@ defmodule Pica do
                            file: fd])}
   end
   
-  
   defp set_append_file(fd) do
-    return_err F.pread(fd, 0, @header), 
-      do: ( {:ok, bin} -> check_append_file(bin, fd) )
+    return_err F.pread(fd, 0, @header) do
+       :eof -> {:error, :undefined}
+      {:ok, bin} -> check_append_file(bin, fd)
+    end
   end
   
   defp check_append_file(<<@version:: @versionBit, @idFix, _opts::binary>>, fd) do
@@ -300,87 +280,143 @@ defmodule Pica do
     do: {:error, :undefined}
   
   
+  
   @doc"""
     {:ok, {{blockKey, blockOffset}, {dataKey, dataOffset}}}
   """
   def get_last(fd) do
-    return_err read_offset(fd, 0, {0, @maxKey}) do
-      {:ok, blockList} -> 
+    return_err read_offset(fd, [{0, 0, @maxKey}]) do
+      {:ok, [blockList]} -> 
         L.last(blockList) |> get_last_data_offset(fd)
     end
   end
   
   defp get_last_data_offset({_, offset} = blc, fd) do
-    return_err read_offset(fd, offset, {0, @maxKey}), 
-      do: ( {:ok, dataOffList} -> {:ok, {blc, L.last(dataOffList)}} )
+    return_err read_offset(fd, [{offset, 0, @maxKey}]), 
+      do: ( {:ok, [dataOffList]} -> {:ok, {blc, L.last(dataOffList)}} )
   end
   
   
   @doc"""
     read real offset value from disk
     [{blockKey, blockOffset, [{dataKey, dataOffset}]}]
+    
+    for minimize reverse function call,
+    most of internal list processing functions return reversed result
   """
-  def read_address(pica_rec( file: fd ), key),
-    do: read_address(fd, key)
-  def read_address(fd, {from, to}) when from < @maxPk and to < @maxPk and from <= to, 
-    do: get_read_range(from, to) |> read_block_and_data_offset(fd)
-  def read_address(_, _), 
-    do: {:error, :undefined}
+  def read_address(pica_rec( file: fd ), keyList), 
+    do: read_address(fd, keyList)
+  def read_address(fd, keyList) do
+    return_err (try do
+      set_key_list(keyList, [])
+    catch
+      _,_ -> {:error, :badarg}
+    end) do 
+      rKeyList ->
+        return_err read_block_offset(fd, rKeyList) do
+          {:ok, rBlockOffList} -> read_data_offset(fd, rBlockOffList, rKeyList)
+        end
+    end
+  end
   
+  ## reversed result
+  defp set_key_list([{from,to} | tail], result) when from < @maxPk and to < @maxPk and from <= to,
+    do: set_key_list(tail, [get_read_range(from, to) | result])
+  defp set_key_list([key | tail], result) when key < @maxPk,
+    do: set_key_list(tail, [get_read_range(key, key) | result])
+  defp set_key_list([], result), do: L.flatten(result)
   
   ## pk ~ ok -> logical address of block and data
+  ## reversed result
   defp get_read_range(from, to), 
     do: calc_read_range( to_subk(from), to_subk(to), [] )
   
+  ## reversed result
   @maxRange @maxKey - 1
-  defp calc_read_range({hh, ht}, {hh, tt}, result), 
-    do: L.reverse([{hh, ht, tt} | result])
+  defp calc_read_range({hh, ht}, {hh, tt}, result), do: [{hh, ht, tt} | result]
   defp calc_read_range({hh, ht}, {th, tt}, result), 
     do: calc_read_range({hh + 1, 0}, {th, tt}, [{hh, ht, @maxRange} | result])
   
   
-  ## get offset of real data
-  defp read_block_and_data_offset(addrRange, fd),
-    do: read_block_offset(addrRange, fd, [])
-  
-  defp read_block_offset([], fd, result),
-    do: read_data_offset(result, fd, [])
-  defp read_block_offset([{block, from, to} | tail], fd, result) do
-    return_err read_offset(fd, 0, {block, block}) do
-      {:ok, [{^block, offset}|_]} -> 
-        read_block_offset(tail, fd, [{block, offset, {from, to}} | result])
-      _other -> 
-        read_block_offset([], fd, result) 
+  defp read_block_offset(fd, rKeyList) do
+    blockList = set_read_block_offset(rKeyList, [])
+    return_err read_offset(fd, blockList) do
+      {:ok, blockOffsetList} ->
+        set_result_block_offset(blockOffsetList, [])
     end
   end
   
-  defp read_data_offset([], _fd, result), 
-    do: {:ok, result}
-  defp read_data_offset([{block, off, key} | tail], fd, result) do
-    return_err read_offset(fd, off, key) do
-      {:ok, dataOffset} ->
-        read_data_offset(tail, fd, [{block, off, dataOffset} | result])
+  ## reversed result
+  defp set_read_block_offset([{b, _, _} | tail], result), 
+    do: set_read_block_offset(tail, [{0, b, b} | result])
+  defp set_read_block_offset([], result), do: result
+  
+  ## reversed result
+  defp set_result_block_offset([[bOff | _] | tail], result),
+    do: set_result_block_offset(tail, [bOff | result])
+  defp set_result_block_offset([[] | _t], _r), 
+    do: {:error, :eof}
+  defp set_result_block_offset([], result), do: {:ok, result}
+  
+  
+  ## reversed result
+  defp read_data_offset(fd, rBlockOffList, rKeyList) do
+    dataList = set_read_data_offset(rBlockOffList, rKeyList, [])
+    return_err read_offset(fd, dataList) do
+      {:ok, dataOffsetList} -> 
+        set_result_data_offset(rBlockOffList, dataOffsetList |> L.reverse, [])
     end
   end
   
-  ## read offset from selected offset positioned block
-  ## [{key, offset}]
-  defp read_offset(fd, offset, {from, _} = key) do
-    return_err read_raw_offset(fd, offset, key) do
-      {:ok, bin} -> 
-        {:ok, revise_offset_binary(bin, key) 
-              |> check_and_build_offset_list(from, [])}
+  ## reversed result
+  defp set_read_data_offset([{_, off} | bTail], [{_, from, to} | dTail], result), 
+    do: set_read_data_offset(bTail, dTail, [{off, from, to} | result])
+  defp set_read_data_offset([], [], result), do: result
+  
+  ## reversed result
+  defp set_result_data_offset([{block, off} | bTail], [data | dTail], result) do
+    case data do
+      [[] | _] -> {:error, :eof}
+      [_ | []] -> {:error, :eof}
+      _ok -> set_result_data_offset(bTail, dTail, [ {block, off, data} | result ])
     end
+  end
+  defp set_result_data_offset([], [], result), do: {:ok, result}
+  
+  
+  
+  ## reqList :: [[{offset, from, to}]]
+  defp read_offset(fd, reqList) do
+    posList = calc_raw_offset_pos(reqList, [])
+    return_err F.pread(fd, posList) do
+       :eof -> {:error, :eof}
+      {:ok, binList} -> 
+        {:ok, check_and_list_raw_offset(binList, reqList)}
+    end
+  end
+  
+  defp calc_raw_offset_pos([{offset, from, to} | tail], result) do
+    from  = if from == 0 do 0 else from - 1 end
+    start = calc_offset_pos(offset, from)
+    fin   = calc_offset_pos(offset, to)
+    calc_raw_offset_pos(tail, [{start, fin - start + @offsetByte} | result])
+  end
+  defp calc_raw_offset_pos([], result), do: L.reverse(result)
+  
+  defp check_and_list_raw_offset(binList, reqList) do
+    fn (bin, {_o, from, _}) -> 
+      revise_offset_binary(bin, from) 
+      |> check_and_build_offset_list(from, [])
+    end |> L.zipwith(binList, reqList)
   end
   
   ## insert 0 offset when requested 0
-  defp revise_offset_binary(bin, {0, _}) do 
+  defp revise_offset_binary(bin, 0) do 
     crc  = Erlang.crc32( <<@fullHeader :: @offBit>> )
     off0 = <<crc:: @crcBit, @fullHeader:: @offBit>>
     <<off0:: binary, bin:: binary>>
   end
-  defp revise_offset_binary(bin, _),
-    do: bin
+  defp revise_offset_binary(bin, _), do: bin
   
   ## crc check and list build
   ## every crc checking for reading must checked here.
@@ -390,19 +426,8 @@ defmodule Pica do
       _any -> L.reverse(result)
     end
   end
-  defp check_and_build_offset_list(_, _, result), 
-    do: L.reverse(result)
+  defp check_and_build_offset_list(_, _, result), do: L.reverse(result)
   
-  defp read_raw_offset(fd, offset, {0, to}),
-    do: do_read_raw_offset(fd, offset, {0, to})
-  defp read_raw_offset(fd, offset, {from, to}),
-    do: do_read_raw_offset(fd, offset, {from - 1, to})
-    
-  defp do_read_raw_offset(fd, offset, {from, to}) do
-    start = calc_offset_pos(offset, from)
-    fin   = calc_offset_pos(offset, to)
-    F.pread(fd, start, fin - start + @offsetByte) 
-  end
   
   
   @doc"""
@@ -452,35 +477,39 @@ defmodule Pica.Test do
   @mReadV      1000
   
   def start(name, n) do
-    {:ok, pica} = Pica.open name
+    {:ok, pica} = Pica.open(name)
+    startNum = Pica.last_pk(pica)
     start = Pica.current_pk(pica)
+    
+    n = if (start + n) < @maxPk do n else @maxPk - start end
     
     :io.format 'test start from ~p ~n', [start]
     
     {t1, {:ok, pica}} = :timer.tc fn() ->
       do_loop_append_test(pica, name, :crypto.strong_rand_bytes(2048), start, n, 0)
     end
-    :io.format 'append loop end>> ~p~n', [t1]
+    :io.format 'append loop end time>> ~p~n~n', [t1]
     
     
-    {t3, result} = :timer.tc fn() ->
-      m_read_test(pica, name, start, 0)
-    end
-    :io.format 'm_get loop end>> ~p~n', [{t3, result}]
-    
-    
-    {t2, _} = :timer.tc fn() ->
+    {t2, {:ok, count1}} = :timer.tc fn() ->
       do_check_test(pica, start, 0, n)
     end
-    :io.format 'get loop end>> ~p~n', [t2]
+    :io.format 'get loop end time>> ~p~n', [t2]
+    :io.format 'get loop end count>> ~p~n~n', [count1]
     
     
+    {t3, count2} = :timer.tc fn() ->
+      s_read_test(pica, start, n, 0)
+    end
+    :io.format 'serial get loop end time>> ~p~n', [t3]
+    :io.format 'serial get loop end count>> ~p~n~n', [count2]
     
-    {:ok, pica}
+    Pica.close(pica)
+    { :ok, {Pica.last_pk(pica) - startNum} }
   end
   
-  def do_loop_append_test(pica,_name,_bin,_start, 0,_v), do: {:ok, pica}
-  def do_loop_append_test(pica, name, bin, start, n, v) do
+  defp do_loop_append_test(pica,_name,_bin,_start, 0,_v), do: {:ok, pica}
+  defp do_loop_append_test(pica, name, bin, start, n, v) do
     data = {v, :binary.part( bin, 0, :crypto.rand_uniform(1, 1024) )}
     dPack = Erlang.term_to_binary(data)
     crc = Erlang.crc32 dPack
@@ -495,9 +524,8 @@ defmodule Pica.Test do
     end
   end
   
-  def do_check_test(_p, _s, v, v), do: :ok
-  def do_check_test(pica, start, v, vv) do
-  
+  defp do_check_test(_p, _s, v, v), do: {:ok, v}
+  defp do_check_test(pica, start, v, vv) do
     {:ok, [b]} = Pica.get pica, (start + v)
     
     vector = v
@@ -506,26 +534,22 @@ defmodule Pica.Test do
     do_check_test(pica, start, v+1, vv)
   end
   
-  
-  def m_read_test(p, n, s, v, c\\0) do
-    if (1 + s + v + @mReadV) < @maxPk do
-      case Pica.get(p, {s+v, s + v + @mReadV}) do
-        {:ok, []} -> {:ok, v - 1}
-        {:ok, list} -> 
-          v = check_m_read_test(list, v)
-          m_read_test(p, n, s, v, c+1)
-      end
-    else
-      {:ok, list} = Pica.get(p, {s+v, @maxPk - 1})
-      check_m_read_test(list, v) - 1
-    end
+  defp s_read_test(_pica, _start, n, n), do: n
+  defp s_read_test(pica, start, n, v) do
+    from = start + v
+    to = if (from + @mReadV) < (start + n) do from + @mReadV else start + n - 1 end
+    
+    {:ok, result} = Pica.get pica, {from, to}
+    
+    v = check_s_read_test(result, v)
+    s_read_test(pica, start, n, v)
   end
   
-  def check_m_read_test([], v), do: v
-  def check_m_read_test([b|tail], v) do
+  defp check_s_read_test([], v), do: v
+  defp check_s_read_test([b|tail], v) do
     vector = v
     {^vector, _bin} = d_check(b)
-    check_m_read_test(tail, v+1)
+    check_s_read_test(tail, v+1)
   end
   
   defp d_check(<<crc::32, d::binary>>) do
@@ -534,4 +558,5 @@ defmodule Pica.Test do
   end
 
 end
+
 # """
