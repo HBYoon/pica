@@ -64,6 +64,10 @@ defmodule Pica do
   
   @doc"""
     close file
+    
+    pica :: pica_rec
+    ->
+    :ok | {:error, reason}
   """
   def close(pica_rec( file: fd )), 
     do: F.close(fd)
@@ -71,6 +75,11 @@ defmodule Pica do
   
   @doc"""
     append data to pica file
+    
+    pica
+    data :: binary
+    ->
+    {:ok, pica} | {:error, :eof} | {:error, reason}
   """
   def append( pica_rec( block: b, data: d, bOff: bof, dOff: dof, file: fd ) = pica, data) 
   when d < @maxKey and b < @maxKey do
@@ -113,8 +122,16 @@ defmodule Pica do
   
   
   @doc"""
-    set the pica record to rollback position
-    {:ok, pica}
+    set the pica record to the past position
+    this is part of rollback method idea
+    but, rollback function is not yet developed
+    
+    so, do not use this function for critical issue
+    
+    pica
+    pk :: integer
+    ->
+    {:ok, pica} | {:error, :eof} | {:error, reason}
   """
   def past_to(pica_rec( file: fd ), pk) do
     return_err read_address(fd, [pk]) do
@@ -132,6 +149,9 @@ defmodule Pica do
   
   
   @doc"""
+    pica | IoDevice :: F.IoDevice
+    pk | {pk, pk} | [pk | {pk, pk}]
+    ->
     [{location, length}]
   """
   def get_location(pica_rec( file: fd ), pk), 
@@ -152,7 +172,7 @@ defmodule Pica do
   
   
   
-  ## {block, bOff, [{data, dOff}]} -> [ [{position, length}] ]
+  ## [{block, bOff, [{data, dOff}]}] -> [ [{position, length}] ]
   ## list of position and length will be grouped by the block
   defp calc_location([], result), 
     do: L.reverse(result)
@@ -176,7 +196,10 @@ defmodule Pica do
   
   
   @doc"""
-    {:ok, [data]}, {:error, :eof}, {:error, posix_error()}
+    pica | IoDevice
+    pk | {pk, pk} | [pk | {pk, pk}]
+    ->
+    {:ok, [data]} | {:error, :eof} | {:error, reason}
   """
   def get(pica_rec( file: fd ), pk), 
     do: get(fd, pk)
@@ -227,9 +250,12 @@ defmodule Pica do
   
   
   @doc """
-    open a writing descriptor in last state. 
-    for read working, use normal erlang file descriptor with raw and binary options.
-    {:ok, pica}
+    open a writing descriptor in last state
+    for read working, use normal erlang file descriptor with raw and binary options
+    
+    path :: F.Filename
+    ->
+    {:ok, pica} | {:error, :undefined} | {:error, reason}
   """
   def open(path) do
     append_to = Flib.is_file(path)
@@ -266,10 +292,9 @@ defmodule Pica do
   
   defp check_append_file(<<@version:: @versionBit, @idFix, _opts::binary>>, fd) do
     return_err get_last(fd) do
-      {:ok, result} ->
-        {{lb, bOff}, {ld, dOff}} = result
-        pica_rec( block: lb, 
-                  data: ld, 
+      {:ok, {{lastBlock, bOff}, {lastData, dOff}}} ->
+        pica_rec( block: lastBlock, 
+                  data: lastData, 
                   bOff: bOff, 
                   dOff: dOff, 
                   file: fd ) |> fin_append
@@ -282,8 +307,11 @@ defmodule Pica do
   
   
   @doc"""
-    {:ok, {{blockKey, blockOffset}, {dataKey, dataOffset}}}
+    pica | IoDevice
+    ->
+    {:ok, {{blockKey, blockOffset}, {dataKey, dataOffset}}} | {:error, reason}
   """
+  def get_last(pica_rec( file: fd )), do: get_last(fd)
   def get_last(fd) do
     return_err read_offset(fd, [{0, 0, @maxKey}]) do
       {:ok, [blockList]} -> 
@@ -299,10 +327,15 @@ defmodule Pica do
   
   @doc"""
     read real offset value from disk
-    [{blockKey, blockOffset, [{dataKey, dataOffset}]}]
     
     for minimize reverse function call,
     most of internal list processing functions return reversed result
+    variable name with r prefix is mark of reversed condition
+    
+    pica | IoDevice
+    [pk | {pk, pk}]
+    ->
+    [{blockKey, blockOffset, [{dataKey, dataOffset}]}] | {:error, :eof} | {:error, reason}
   """
   def read_address(pica_rec( file: fd ), keyList), 
     do: read_address(fd, keyList)
@@ -384,8 +417,10 @@ defmodule Pica do
   defp set_result_data_offset([], [], result), do: {:ok, result}
   
   
-  
+  ## IoDevice
   ## reqList :: [[{offset, from, to}]]
+  ## ->
+  ## {:ok, [[{subKey, offset}]]} | {:error, :eof} | {:error, reason}
   defp read_offset(fd, reqList) do
     posList = calc_raw_offset_pos(reqList, [])
     return_err F.pread(fd, posList) do
@@ -419,10 +454,9 @@ defmodule Pica do
   defp revise_offset_binary(bin, _), do: bin
   
   ## crc check and list build
-  ## every crc checking for reading must checked here.
-  defp check_and_build_offset_list(<<crc:: @crcBit, off:: @offBit, tail:: binary>>, start, result) do
+  defp check_and_build_offset_list(<<crc:: @crcBit, off:: @offBit, tail:: binary>>, subKey, result) do
     case calc_off_crc(off) do
-      ^crc -> check_and_build_offset_list(tail, start + 1, [{start, off} | result])
+      ^crc -> check_and_build_offset_list(tail, subKey + 1, [{subKey, off} | result])
       _any -> L.reverse(result)
     end
   end
@@ -432,12 +466,20 @@ defmodule Pica do
   
   @doc"""
     get last inserted pk
+    
+    pica
+    ->
+    pk
   """
   def last_pk(pica), 
     do: current_pk(pica) - 1
     
   @doc"""
     get current inserting pk
+    
+    pica
+    ->
+    pk
   """
   def current_pk(pica_rec( block: b, data: d )), 
     do: to_pk(b, d)
@@ -464,6 +506,7 @@ end
 
 
 # """
+
 defmodule Pica.Test do
   
   alias :erlang,  as: Erlang
