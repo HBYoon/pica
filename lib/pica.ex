@@ -466,14 +466,20 @@ defmodule Pica do
   
   @doc"""
     get last inserted pk
+    raw IoDevice argument need disk reading processes
+    use pica argument as possible
     
-    pica
+    pica | IoDevice
     ->
     pk
   """
   def last_pk(pica), 
     do: current_pk(pica) - 1
-    
+  def current_pk(fd) do
+    return_err get_last(fd),
+      do: ( {:ok, {{b, _}, {d, _}}} -> to_pk(b, d) )
+  end
+  
   @doc"""
     get current inserting pk
     
@@ -505,7 +511,7 @@ defmodule Pica do
 end
 
 
-# """
+"""
 
 defmodule Pica.Test do
   
@@ -602,4 +608,4 @@ defmodule Pica.Test do
 
 end
 
-# """
+"""
