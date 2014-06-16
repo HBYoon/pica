@@ -81,45 +81,70 @@ defmodule Pica do
     ->
     {:ok, pica} | {:error, :eof} | {:error, reason}
   """
-  def append( pica_rec( block: b, data: d, bOff: bof, dOff: dof, file: fd ) = pica, data) 
+  
+  def append( pica_rec( block: b, data: d, bOff: bof, dOff: dof, file: fd ) = pica, data ) when is_list(data) do
+    return_err build_append_data({b, d, bof, dof}, data, [], []) do
+      {{b, d, bof, dof}, offList, dataList} ->
+        return_err F.pwrite(fd, L.flatten([dataList, offList])), 
+          do: {:ok, pica_rec( pica, [ block: b, data: d, bOff: bof, dOff: dof ])}
+    end
+  end
+  def append(pica, data),
+    do: append(pica, [data])
+  
+  
+  
+  defp build_append_data({b, d, bof, dof}, [data | tail], ol, dl) 
   when d < @maxKey and b < @maxKey do
-    nextOff = dof + byte_size(data)
-    
+    nextOff    =  dof + byte_size(data)
     dataWriter = {bof + dof, data}
-    posWriter  = {calc_offset_pos(bof, d), pack_offset(nextOff)}
+    offWriter  = {calc_offset_pos(bof, d), pack_offset(nextOff)}
     
-    return_err F.pwrite(fd, [dataWriter, posWriter]), 
-      do: pica_rec(pica, [ data: d+1, dOff: nextOff ]) |> fin_append
+    {b, d+1, bof, nextOff}
+    |> build_append_data(tail, [offWriter | ol], [dataWriter | dl])
   end
   
-  def append(_pica,_data), 
-    do: {:error, :eof}
   
   ## append next block
-  defp fin_append(pica_rec( block: b, data: @maxKey, bOff: bof, dOff: dof, file: fd ) = pica) 
+  defp build_append_data({b, @maxKey, bof, dof}, data, ol, dl) 
   when b < @maxKey do
-    nextBlock = b + 1
-    nextOffset = bof + dof
+    nextOff     =  bof + dof
+    blockWriter = {calc_offset_pos(0, b), pack_offset(nextOff)}
     
-    blockWriter = {calc_offset_pos(0, b), pack_offset(nextOffset)}
-    headerSet = {nextOffset + @fullHeader, [0]}
+    nextOl = case data do
+               [] -> [{nextOff + @fullHeader, <<0>>}, blockWriter | ol]
+               _o -> [blockWriter | ol]
+             end
     
-    return_err F.pwrite(fd, [headerSet, blockWriter]), 
-      do: {:ok, pica_rec(pica, [ block: nextBlock, 
-                                 data: 0, 
-                                 bOff: nextOffset, 
-                                 dOff: @fullHeader ])}
+    {b + 1, 0, nextOff, @fullHeader}
+    |> build_append_data(data, nextOl, dl)
   end
   
-  ## normal or pk overflow
-  defp fin_append(pica), 
-    do: {:ok, pica}
+  defp build_append_data(state, [], offList, dataList), 
+    do: {state, pack_append_data(offList), pack_append_data(dataList)}
+  
+  defp build_append_data(_p, _d, _ol, _dl), do: {:error, :eof}
+  
+  defp pack_append_data([{pos, data} | tail]), do: pack_append_data(tail, [{pos, [data]}])
+  defp pack_append_data([]), do: []
+  
+  defp pack_append_data([{pos, data} | tail], result = [{lastPos, resultList} | resultTail]) do
+    case lastPos - byte_size(data) do
+      ^pos -> 
+        pack_append_data(tail, [{pos, [data | resultList]} | resultTail])
+      _any ->
+        pack_append_data(tail, [{pos, [data]} | result])
+    end
+  end
+  defp pack_append_data([], result), do: result
+  
+  
+  
   
   defp pack_offset(n), 
     do: pack_offset(calc_off_crc(n), n)
   defp pack_offset(crc, n), 
-    do: <<crc:: @crcBit, n:: @offBit, 0:: @offsetBit>>
-  
+    do: <<crc:: @crcBit, n:: @offBit>>
   
   @doc"""
     set the pica record to the past position
@@ -152,7 +177,7 @@ defmodule Pica do
     pica | IoDevice :: F.IoDevice
     pk | {pk, pk} | [pk | {pk, pk}]
     ->
-    [{location, length}]
+    {:ok, [{location, length}]} | {:error, :eof} | {:error, :reason}
   """
   def get_location(pica_rec( file: fd ), pk), 
     do: get_location(fd, pk)
@@ -293,11 +318,11 @@ defmodule Pica do
   defp check_append_file(<<@version:: @versionBit, @idFix, _opts::binary>>, fd) do
     return_err get_last(fd) do
       {:ok, {{lastBlock, bOff}, {lastData, dOff}}} ->
-        pica_rec( block: lastBlock, 
-                  data: lastData, 
-                  bOff: bOff, 
-                  dOff: dOff, 
-                  file: fd ) |> fin_append
+        {:ok, pica_rec( block: lastBlock, 
+                        data: lastData, 
+                        bOff: bOff, 
+                        dOff: dOff, 
+                        file: fd )}
     end
   end
   
@@ -466,29 +491,44 @@ defmodule Pica do
   
   @doc"""
     get last inserted pk
-    raw IoDevice argument need disk reading processes
-    use pica argument as possible
-    
-    pica | IoDevice
-    ->
-    pk
-  """
-  def last_pk(pica), 
-    do: current_pk(pica) - 1
-  def current_pk(fd) do
-    return_err get_last(fd),
-      do: ( {:ok, {{b, _}, {d, _}}} -> to_pk(b, d) )
-  end
-  
-  @doc"""
-    get current inserting pk
     
     pica
     ->
     pk
+    
+    or
+    
+    IoDevice
+    ->
+    pk | {:error, reason}
+  """
+  def last_pk(pica) do
+    return_err current_pk(pica),
+      do: ( cpk -> cpk - 1 )
+  end
+
+  
+  @doc"""
+    get current inserting pk
+    raw IoDevice argument need disk reading processes
+    use pica argument as possible
+    
+    pica
+    ->
+    pk
+    
+    or
+    
+    IoDevice
+    ->
+    pk | {:error, reason}
   """
   def current_pk(pica_rec( block: b, data: d )), 
     do: to_pk(b, d)
+  def current_pk(fd) do
+    return_err get_last(fd),
+      do: ( {:ok, {{b, _}, {d, _}}} -> to_pk(b, d) )
+  end
   
   defp to_pk(h, t), do: 
     to_pk(<<h:: @subKeyBit, t:: @subKeyBit>>)
@@ -511,11 +551,12 @@ defmodule Pica do
 end
 
 
-"""
+# """
 
 defmodule Pica.Test do
   
   alias :erlang,  as: Erlang
+  alias :lists,   as: L
   alias :math,    as: Math
   
   @subKeyBit   18
@@ -525,7 +566,9 @@ defmodule Pica.Test do
   
   @mReadV      1000
   
-  def start(name, n) do
+  @restart     5000
+  
+  def start(name, n, bAppend \\ 1) do
     {:ok, pica} = Pica.open(name)
     startNum = Pica.last_pk(pica)
     start = Pica.current_pk(pica)
@@ -535,10 +578,20 @@ defmodule Pica.Test do
     :io.format 'test start from ~p ~n', [start]
     
     {t1, {:ok, pica}} = :timer.tc fn() ->
-      do_loop_append_test(pica, name, :crypto.strong_rand_bytes(2048), start, n, 0)
+      do_loop_append_test(pica, name, :crypto.strong_rand_bytes(2048), start, n, 0, bAppend)
     end
     :io.format 'append loop end time>> ~p~n~n', [t1]
     
+    {te, result} = :timer.tc fn() ->
+      if n > @mReadV do else nil end
+    end
+    
+    pica = if result != nil do 
+      :io.format 'append test 2 end time>> ~p~n~n', [te]
+      result 
+    else 
+      pica 
+    end
     
     {t2, {:ok, count1}} = :timer.tc fn() ->
       do_check_test(pica, start, 0, n)
@@ -557,20 +610,30 @@ defmodule Pica.Test do
     { :ok, {Pica.last_pk(pica) - startNum} }
   end
   
-  defp do_loop_append_test(pica,_name,_bin,_start, 0,_v), do: {:ok, pica}
-  defp do_loop_append_test(pica, name, bin, start, n, v) do
-    data = {v, :binary.part( bin, 0, :crypto.rand_uniform(1, 1024) )}
-    dPack = Erlang.term_to_binary(data)
-    crc = Erlang.crc32 dPack
-    {:ok, pica} = Pica.append pica, <<crc::32, dPack::binary>>
-    if rem(n, 4500) == 0 do
+  defp do_loop_append_test(pica,_name,_bin,_start, 0,_v,_ba), do: {:ok, pica}
+  defp do_loop_append_test(pica, name, bin, start, n, v, ba) do
+  
+    now = if (n - ba) > 0 do ba else n end
+    {v2, data} = create_append_test_data(v, now, bin, [])
+    
+    {:ok, pica} = Pica.append(pica, data)
+    if rem(n, @restart) == 0 do
       Pica.close(pica)
       {:ok, pica} = Pica.open(name)
       
-      do_loop_append_test(pica, name, bin, start, n-1, v+1)
+      do_loop_append_test(pica, name, bin, start, n-now, v2, ba)
     else
-      do_loop_append_test(pica, name, bin, start, n-1, v+1)
+      do_loop_append_test(pica, name, bin, start, n-now, v2, ba)
     end
+  end
+  
+  defp create_append_test_data(v, 0,_bin, r), do: {v, L.reverse(r)}
+  defp create_append_test_data(v, n, bin, r) do
+    data = {v, :binary.part( bin, 0, :crypto.rand_uniform(1, 2048) )}
+    # data = {v, :binary.part( bin, 0, 400 )}
+    dPack = Erlang.term_to_binary(data)
+    crc = Erlang.crc32(dPack)
+    create_append_test_data(v + 1, n - 1, bin, [<<crc::32, dPack::binary>> | r])
   end
   
   defp do_check_test(_p, _s, v, v), do: {:ok, v}
@@ -608,4 +671,4 @@ defmodule Pica.Test do
 
 end
 
-"""
+# """
