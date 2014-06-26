@@ -180,19 +180,17 @@ defmodule Pica do
     ->
     {:ok, [{location, length}]} | {:error, :eof} | {:error, :reason}
   """
-  def get_location(pica_rec( file: fd ), pk), 
-    do: get_location(fd, pk)
-  def get_location(fd, pk) when is_integer(pk), 
-    do: get_location(fd, [pk])
-  def get_location(fd, {from, to}), 
-    do: get_location(fd, [{from, to}])
-  def get_location(fd, pkList) do
-    return_err do_get_location(fd, pkList),
+  def get_location(pi, pk) when is_integer(pk), 
+    do: get_location(pi, [pk])
+  def get_location(pi, {from, to}), 
+    do: get_location(pi, [{from, to}])
+  def get_location(pi, pkList) do
+    return_err do_get_location(pi, pkList),
       do: ( {:ok, loc} -> {:ok, L.flatten(loc)} )
   end
   
-  defp do_get_location(fd, pkList) do
-    return_err read_address(fd, pkList), 
+  defp do_get_location(pi, pkList) do
+    return_err read_address(pi, pkList), 
       do: ( {:ok, addr} -> {:ok, calc_location(addr)} )
   end
   
@@ -224,14 +222,12 @@ defmodule Pica do
     ->
     {:ok, [data]} | {:error, :eof} | {:error, reason}
   """
-  def get(pica_rec( file: fd ), pk), 
-    do: get(fd, pk)
-  def get(fd, {from, to}) do
-    return_err do_get_location(fd, [{from, to}]), 
+  def get(pi = pica_rec( file: fd ), {from, to}) do
+    return_err do_get_location(pi, [{from, to}]), 
       do: ( {:ok, loc} -> serial_read(fd, loc) )
   end
-  def get(fd, pk) do
-    return_err get_location(fd, pk), 
+  def get(pi = pica_rec( file: fd ), pk) do
+    return_err get_location(pi, pk), 
       do: ( {:ok, loc} -> F.pread(fd, loc) )
   end
   
@@ -335,15 +331,14 @@ defmodule Pica do
     ->
     {:ok, {{blockKey, blockOffset}, {dataKey, dataOffset}}} | {:error, reason}
   """
-  def get_last(pica_rec( file: fd )), do: get_last(fd)
-  def get_last(fd) do
-    return_err read_offset(fd, [{0, 0, @maxKey}]) do
-      {_, [bOffList]} -> L.last(bOffList) |> get_last_data_offset(fd)
+  def get_last(pi) do
+    return_err read_offset(pi, [{0, 0, @maxKey}]) do
+      {_, [bOffList]} -> L.last(bOffList) |> get_last_data_offset(pi)
     end
   end
   
-  defp get_last_data_offset({_, offset} = blc, fd) do
-    return_err read_offset(fd, [{offset, 0, @maxKey}]) do
+  defp get_last_data_offset({_, offset} = blc, pi) do
+    return_err read_offset(pi, [{offset, 0, @maxKey}]) do
       {_, [dOffList]} -> {:ok, {blc, L.last(dOffList)}}
     end
   end
@@ -358,18 +353,16 @@ defmodule Pica do
     ->
     [{blockKey, blockOffset, [{dataKey, dataOffset}]}] | {:error, :eof} | {:error, reason}
   """
-  def read_address(pica_rec( file: fd ), keyList), 
-    do: read_address(fd, keyList)
-  def read_address(fd, keyList) do
+  def read_address(pi, keyList) do
     return_err (try do
       set_key_list(keyList, [])
     catch
       _,_ -> {:error, :badarg}
     end) do 
       rKeyList ->
-        return_err read_block_offset(fd, rKeyList) do
+        return_err read_block_offset(pi, rKeyList) do
           {_, rBlockOffList} -> 
-            read_data_offset(fd, rBlockOffList, rKeyList)
+            read_data_offset(pi, rBlockOffList, rKeyList)
         end
     end
   end
@@ -398,9 +391,9 @@ defmodule Pica do
     do: calc_read_range({hh + 1, 0}, {th, tt}, [{hh, ht, @maxRange} | result])
   
   
-  defp read_block_offset(fd, rKeyList) do
+  defp read_block_offset(pi, rKeyList) do
     rBlockList = fn({b,_,_}) -> {0, b, b} end |> L.map(rKeyList)
-    return_err read_offset(fd, rBlockList) do
+    return_err read_offset(pi, rBlockList) do
       {_, rbol} ->
         {:ok, fn (v) -> 
                 [bOff | _] = v
@@ -411,10 +404,10 @@ defmodule Pica do
   
   
   ## reversed result
-  defp read_data_offset(fd, rbol, rKeyList) do
+  defp read_data_offset(pi, rbol, rKeyList) do
     return_err zip_block_and_key(rbol, rKeyList) do
       rDataList ->
-        return_err read_offset(fd, rDataList) do
+        return_err read_offset(pi, rDataList) do
           {:eof, _} -> {:error, :eof}
           {:ok, rdol} -> 
             set_result_data_offset(rbol, rdol, [])
