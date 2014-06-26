@@ -50,14 +50,14 @@ defmodule Pica do
   
   
   ## macro
-  defmacrop return_err(result, whenOkCase) do
+  defmacrop return_err(result, doBlock) do
     errCase = {:'->', [], [ [{:error, {:reason, [], nil}}], 
                              {:error, {:reason, [], nil}} ]}
     
-    withErrCase = case L.keyfind(:do, 1, whenOkCase) do
-      {:do, other = [{:'->', _, _} | _]} -> [errCase | other]
-      {:do, other} -> [errCase, {:'->',[],[ [{:_,[],nil}], other ]}]
-    end
+    withErrCase = case L.keyfind(:do, 1, doBlock) do
+                    {:do, ok = [{:'->', _, _} | _]} -> [errCase | ok]
+                    {:do, ok} -> [errCase, {:'->',[],[ [{:_,[],nil}], ok ]}]
+                  end
     
     quote do: ( case unquote(result), do: unquote(withErrCase) )
   end
@@ -89,7 +89,7 @@ defmodule Pica do
           do: {:ok, pica_rec( pica, [ block: b, data: d, bOff: bof, dOff: dof ])}
     end
   end
-  def append(pica, data),
+  def append(pica = pica_rec(), data),
     do: append(pica, [data])
   
   
@@ -173,6 +173,7 @@ defmodule Pica do
   end
   
   
+  
   @doc"""
     pica | IoDevice :: F.IoDevice
     pk | {pk, pk} | [pk | {pk, pk}]
@@ -192,30 +193,27 @@ defmodule Pica do
   
   defp do_get_location(fd, pkList) do
     return_err read_address(fd, pkList), 
-      do: ( {:ok, addr} -> {:ok, calc_location(addr, [])} )
+      do: ( {:ok, addr} -> {:ok, calc_location(addr)} )
   end
-  
   
   
   ## [{block, bOff, [{data, dOff}]}] -> [ [{position, length}] ]
   ## list of position and length will be grouped by the block
-  defp calc_location([], result), 
-    do: L.reverse(result)
-  defp calc_location([{_blc, offset, dList} | tail], result) do
-    faList = start_calc_in_block_location(dList, offset)
-    calc_location(tail, [faList | result])
+  defp calc_location(addr) do
+    fn({_b, offset, dList}) ->
+      case dList do
+        [] -> []
+        [{_p, off} | tail] ->
+          calc_location(tail, offset, [{off + offset, nil}])
+      end
+    end |> L.map(addr)
   end
   
-  defp start_calc_in_block_location([], _off), 
-    do: []
-  defp start_calc_in_block_location([{_p, off} | tail], offset), 
-    do: calc_in_block_location(tail, offset, [{off + offset, nil}])
-    
-  defp calc_in_block_location([], _off, [_ | result]), 
+  defp calc_location([], _off, [_ | result]), 
     do: L.reverse(result)
-  defp calc_in_block_location([{_p, off} | tail], offset, [{dof, nil} | result]) do
+  defp calc_location([{_p, off} | tail], offset, [{dof, nil} | result]) do
     nextOff = off + offset
-    calc_in_block_location(tail, offset, [{nextOff, nil}, {dof, nextOff - dof} | result])
+    calc_location(tail, offset, [{nextOff, nil}, {dof, nextOff - dof} | result])
   end
   
   
@@ -230,7 +228,7 @@ defmodule Pica do
     do: get(fd, pk)
   def get(fd, {from, to}) do
     return_err do_get_location(fd, [{from, to}]), 
-      do: ( {:ok, loc} ->  serial_read(fd, loc) )
+      do: ( {:ok, loc} -> serial_read(fd, loc) )
   end
   def get(fd, pk) do
     return_err get_location(fd, pk), 
@@ -256,7 +254,8 @@ defmodule Pica do
   defp calc_in_block_offset([{_pos, len} | tail], lenList), 
     do: calc_in_block_offset(tail, [len | lenList])
   
-  
+  defp read_file([], _fd, []), 
+    do: {:error, :eof}
   defp read_file([], _fd, result), 
     do: {:ok, L.reverse(result)}
   defp read_file([{start, len, lenList} | tail], fd, result) do
@@ -275,7 +274,7 @@ defmodule Pica do
   
   
   @doc """
-    open a writing descriptor in last state
+    open writing descriptor in last state
     for read working, use normal erlang file descriptor with raw and binary options
     
     path :: F.Filename
@@ -339,23 +338,20 @@ defmodule Pica do
   def get_last(pica_rec( file: fd )), do: get_last(fd)
   def get_last(fd) do
     return_err read_offset(fd, [{0, 0, @maxKey}]) do
-      {:ok, [blockList]} -> 
-        L.last(blockList) |> get_last_data_offset(fd)
+      {_, [bOffList]} -> L.last(bOffList) |> get_last_data_offset(fd)
     end
   end
   
   defp get_last_data_offset({_, offset} = blc, fd) do
-    return_err read_offset(fd, [{offset, 0, @maxKey}]), 
-      do: ( {:ok, [dataOffList]} -> {:ok, {blc, L.last(dataOffList)}} )
+    return_err read_offset(fd, [{offset, 0, @maxKey}]) do
+      {_, [dOffList]} -> {:ok, {blc, L.last(dOffList)}}
+    end
   end
   
   
   @doc"""
     read real offset value from disk
-    
-    for minimize reverse function call,
-    most of internal list processing functions return reversed result
-    variable name with r prefix is mark of reversed condition
+    reversed list variable has prefix r
     
     pica | IoDevice
     [pk | {pk, pk}]
@@ -372,16 +368,21 @@ defmodule Pica do
     end) do 
       rKeyList ->
         return_err read_block_offset(fd, rKeyList) do
-          {:ok, rBlockOffList} -> read_data_offset(fd, rBlockOffList, rKeyList)
+          {_, rBlockOffList} -> 
+            read_data_offset(fd, rBlockOffList, rKeyList)
         end
     end
   end
   
   ## reversed result
-  defp set_key_list([{from,to} | tail], result) when from < @maxPk and to < @maxPk and from <= to,
-    do: set_key_list(tail, [get_read_range(from, to) | result])
-  defp set_key_list([key | tail], result) when key < @maxPk,
-    do: set_key_list(tail, [get_read_range(key, key) | result])
+  defp set_key_list([key | kTail], result) do
+    case key do
+      {from, to} when from < @maxPk and to < @maxPk and from <= to ->
+        set_key_list(kTail, [get_read_range(from, to) | result])
+      key when key < @maxPk ->
+        set_key_list(kTail, [get_read_range(key, key) | result])
+    end
+  end
   defp set_key_list([], result), do: L.flatten(result)
   
   ## pk ~ ok -> logical address of block and data
@@ -391,67 +392,71 @@ defmodule Pica do
   
   ## reversed result
   @maxRange @maxKey - 1
-  defp calc_read_range({hh, ht}, {hh, tt}, result), do: [{hh, ht, tt} | result]
+  defp calc_read_range({hh, ht}, {hh, tt}, result), 
+    do: [{hh, ht, tt} | result]
   defp calc_read_range({hh, ht}, {th, tt}, result), 
     do: calc_read_range({hh + 1, 0}, {th, tt}, [{hh, ht, @maxRange} | result])
   
   
   defp read_block_offset(fd, rKeyList) do
-    blockList = set_read_block_offset(rKeyList, [])
-    return_err read_offset(fd, blockList) do
-      {:ok, blockOffsetList} ->
-        set_result_block_offset(blockOffsetList, [])
+    rBlockList = fn({b,_,_}) -> {0, b, b} end |> L.map(rKeyList)
+    return_err read_offset(fd, rBlockList) do
+      {_, rbol} ->
+        {:ok, fn (v) -> 
+                [bOff | _] = v
+                 bOff 
+              end |> L.map(rbol)}
+    end
+  end
+  
+  
+  ## reversed result
+  defp read_data_offset(fd, rbol, rKeyList) do
+    return_err zip_block_and_key(rbol, rKeyList) do
+      rDataList ->
+        return_err read_offset(fd, rDataList) do
+          {:eof, _} -> {:error, :eof}
+          {:ok, rdol} -> 
+            set_result_data_offset(rbol, rdol, [])
+        end
+    end
+  end
+  
+  ## {:error, :eof} when nil block offset condition
+  defp zip_block_and_key(rbol, rkl) do
+    try do
+      fn ({_, off}, {_, from, to}) -> 
+        {off, from, to}
+      end |> L.zipwith(rbol, rkl)
+    catch
+      _, _ -> {:error, :eof}
     end
   end
   
   ## reversed result
-  defp set_read_block_offset([{b, _, _} | tail], result), 
-    do: set_read_block_offset(tail, [{0, b, b} | result])
-  defp set_read_block_offset([], result), do: result
-  
-  ## reversed result
-  defp set_result_block_offset([[bOff | _] | tail], result),
-    do: set_result_block_offset(tail, [bOff | result])
-  defp set_result_block_offset([[] | _t], _r), 
-    do: {:error, :eof}
-  defp set_result_block_offset([], result), do: {:ok, result}
-  
-  
-  ## reversed result
-  defp read_data_offset(fd, rBlockOffList, rKeyList) do
-    dataList = set_read_data_offset(rBlockOffList, rKeyList, [])
-    return_err read_offset(fd, dataList) do
-      {:ok, dataOffsetList} -> 
-        set_result_data_offset(rBlockOffList, dataOffsetList |> L.reverse, [])
-    end
-  end
-  
-  ## reversed result
-  defp set_read_data_offset([{_, off} | bTail], [{_, from, to} | dTail], result), 
-    do: set_read_data_offset(bTail, dTail, [{off, from, to} | result])
-  defp set_read_data_offset([], [], result), do: result
-  
-  ## reversed result
-  defp set_result_data_offset([{block, off} | bTail], [data | dTail], result) do
-    case data do
-      [[] | _] -> {:error, :eof}
-      [_ | []] -> {:error, :eof}
-      _ok -> set_result_data_offset(bTail, dTail, [ {block, off, data} | result ])
-    end
-  end
+  defp set_result_data_offset([{block, off} | bTail], [data | dTail], result), 
+    do: set_result_data_offset(bTail, dTail, [ {block, off, data} | result ])
   defp set_result_data_offset([], [], result), do: {:ok, result}
   
   
-  ## IoDevice
-  ## reqList :: [[{offset, from, to}]]
-  ## ->
-  ## {:ok, [[{subKey, offset}]]} | {:error, :eof} | {:error, reason}
-  defp read_offset(fd, reqList) do
+  @doc"""
+    return sub key and offset
+    
+    from <= subKey <= to + 1
+    
+    pica | IoDevice
+    reqList :: [{offset, from, to}]
+    ->
+    {:ok, [[{subKey :: integer, offset}]]} | {:eof, [[{subKey, offset}]]} | {:error, reason}
+  """
+  def read_offset(pica_rec(file: fd), reqList), 
+    do: read_offset(fd, reqList)
+  def read_offset(fd, reqList) do
     posList = calc_raw_offset_pos(reqList, [])
     return_err F.pread(fd, posList) do
-       :eof -> {:error, :eof}
+       :eof -> {:eof, []} 
       {:ok, binList} -> 
-        {:ok, check_and_list_raw_offset(binList, reqList)}
+        check_offset_and_eof(binList, reqList, [], :ok)
     end
   end
   
@@ -463,29 +468,32 @@ defmodule Pica do
   end
   defp calc_raw_offset_pos([], result), do: L.reverse(result)
   
-  defp check_and_list_raw_offset(binList, reqList) do
-    fn (bin, {_o, from, _}) -> 
-      revise_offset_binary(bin, from) 
-      |> check_and_build_offset_list(from, [])
-    end |> L.zipwith(binList, reqList)
+  defp check_offset_and_eof([bin | bTail], [{_o, from, _} | rTail], result, state) do
+    case revise_offset_binary(bin, from) 
+         |> check_and_build_offset_list(from, []) do
+      {:eof, []} -> {:eof, L.reverse(result)}
+      {:eof,  r} -> check_offset_and_eof(bTail, rTail, [r | result], :eof)
+      {:ok,   r} -> check_offset_and_eof(bTail, rTail, [r | result], state)
+    end
   end
+  defp check_offset_and_eof([], [], result, state), do: {state, L.reverse(result)}
   
   ## insert 0 offset when requested 0
-  defp revise_offset_binary(bin, 0) do 
-    crc  = Erlang.crc32( <<@fullHeader :: @offBit>> )
-    off0 = <<crc:: @crcBit, @fullHeader:: @offBit>>
-    <<off0:: binary, bin:: binary>>
-  end
+  ## pre calculated crc value
+    offBit = @offBit
+    @crc32_0 Erlang.crc32( <<@fullHeader :: [integer, size(offBit)]>> )
+  defp revise_offset_binary(bin, 0), 
+    do: <<@crc32_0 :: @crcBit, @fullHeader :: @offBit, bin:: binary>>
   defp revise_offset_binary(bin, _), do: bin
   
   ## crc check and list build
   defp check_and_build_offset_list(<<crc:: @crcBit, off:: @offBit, tail:: binary>>, subKey, result) do
     case calc_off_crc(off) do
       ^crc -> check_and_build_offset_list(tail, subKey + 1, [{subKey, off} | result])
-      _any -> L.reverse(result)
+      _any -> {:eof, L.reverse(result)}
     end
   end
-  defp check_and_build_offset_list(_, _, result), do: L.reverse(result)
+  defp check_and_build_offset_list(_, _, result), do: {:ok, L.reverse(result)}
   
   
   
