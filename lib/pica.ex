@@ -232,23 +232,24 @@ defmodule Pica do
   end
   
   defp serial_read(fd, loc) do
-    return_err ( calc_file_offset(loc, []) |> read_file(fd, []) ), 
+    return_err ( calc_file_offset(loc) |> read_file(fd, []) ), 
       do: ( {:ok, data} -> {:ok, L.flatten(data)} )
   end
   
   ## [ [{position, length}] ] -> [{position, groupLength, [dataLength]}]
   ## for F.pread and bin_split functions
-  defp calc_file_offset([faList | tail], result) do
-    [{pos, _len} | _] = faList
-    {endPos, lenList} = calc_in_block_offset(faList, [])
-     calc_file_offset(tail, [{pos, endPos - pos, lenList} | result])
+  defp calc_file_offset(loc) do
+    fn([first | _] = faList) ->
+      {sPos, _sLen} = first
+      {lenList, {ePos, eLen}} = calc_in_block_offset(faList, first)
+      {sPos, ePos + eLen - sPos, lenList}
+    end |> L.map(loc)
   end
-  defp calc_file_offset([], result), do: L.reverse(result)
   
-  defp calc_in_block_offset([{pos, len} | []], lenList), 
-    do: {pos + len, [len | lenList] |> L.reverse}
-  defp calc_in_block_offset([{_pos, len} | tail], lenList), 
-    do: calc_in_block_offset(tail, [len | lenList])
+  defp calc_in_block_offset(faList, first) do
+    fn(last = {_pos, len}, _) -> {len, last}
+    end |> L.mapfoldl(first, faList)
+  end
   
   defp read_file([], _fd, []), 
     do: {:error, :eof}
@@ -552,7 +553,7 @@ defmodule Pica do
 end
 
 
-# """
+"""
 
 defmodule Pica.Test do
   
@@ -672,4 +673,4 @@ defmodule Pica.Test do
 
 end
 
-# """
+"""
