@@ -144,7 +144,7 @@ defmodule Pica do
   defp pack_offset(n), 
     do: pack_offset(calc_off_crc(n), n)
   defp pack_offset(crc, n), 
-    do: <<crc:: @crcBit, n:: @offBit>>
+    do: <<crc :: @crcBit, n :: @offBit>>
   
   @doc"""
     set the pica record to the past position
@@ -264,7 +264,7 @@ defmodule Pica do
   end
   
   defp split_bin([len|next], bin, result) do
-    <<data::[binary, size(len)], tail:: binary>> = bin
+    <<data :: binary-size(len), tail :: binary>> = bin
     split_bin(next, tail, [data|result])
   end
   defp split_bin([], _, result), do: L.reverse(result)
@@ -295,7 +295,7 @@ defmodule Pica do
   defp do_open(false, fd), do: set_new_file(fd)
   
   defp set_new_file(fd) do
-    return_err F.pwrite(fd, [ {0, <<@version:: @versionBit, @idFix, 0:: @fhBit>>}, 
+    return_err F.pwrite(fd, [ {0, <<@version :: @versionBit, @idFix, 0 :: @fhBit>>}, 
                               {(@fullHeader * 2) - @fixByte, [0]} ]), 
       do: {:ok, pica_rec([ block: 0, 
                            data: 0, 
@@ -311,7 +311,7 @@ defmodule Pica do
     end
   end
   
-  defp check_append_file(<<@version:: @versionBit, @idFix, _opts::binary>>, fd) do
+  defp check_append_file(<<@version :: @versionBit, @idFix, _opts :: binary>>, fd) do
     return_err get_last(fd) do
       {:ok, {{lastBlock, bOff}, {lastData, dOff}}} ->
         {:ok, pica_rec( block: lastBlock, 
@@ -475,9 +475,9 @@ defmodule Pica do
   ## insert 0 offset when requested 0
   ## pre calculated crc value
     offBit = @offBit
-    @crc32_0 Erlang.crc32( <<@fullHeader :: [integer, size(offBit)]>> )
+    @crc32_0 Erlang.crc32( <<@fullHeader :: integer-size(offBit)>> )
   defp revise_offset_binary(bin, 0), 
-    do: <<@crc32_0 :: @crcBit, @fullHeader :: @offBit, bin:: binary>>
+    do: <<@crc32_0 :: @crcBit, @fullHeader :: @offBit, bin :: binary>>
   defp revise_offset_binary(bin, _), do: bin
   
   ## crc check and list build
