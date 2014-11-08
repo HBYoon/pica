@@ -231,62 +231,10 @@ defmodule Pica do
     ->
     {:ok, [data]} | {:error, :eof} | {:error, reason}
   """
-  def get(pi = pica_rec( file: fd ), {from, to}) do
-    return_err get_location(pi, {from, to}), 
-      do: ( {:ok, locList} -> read_serial_loc(fd, locList) )
-  end
   def get(pi = pica_rec( file: fd ), pk) do
     return_err get_location(pi, pk), 
       do: ( {:ok, locList} -> F.pread(fd, locList |> L.flatten) )
   end
-  
-  
-  
-  defp read_serial_loc(fd, locList) do
-    {rPosLenList, rLenList} = calc_serial_loc(locList)
-    return_err F.pread(fd, rPosLenList) do 
-      {:ok, []} -> {:error, :eof}
-      {:ok, rBinList} -> 
-        {:ok, split_serial_result(rLenList, rBinList)}
-    end
-  end
-  
-  defp calc_serial_loc(locList), 
-    do: calc_serial_loc(locList, {[],[]})
-  
-  defp calc_serial_loc([loc|tail], {posLenList, lenList}) do
-    {start, len, rLenList} = do_calc_serial_loc(loc)
-    calc_serial_loc(tail, {[{start, len}| posLenList], [rLenList | lenList]})
-  end
-  defp calc_serial_loc([], result), 
-    do: result
-  
-  defp do_calc_serial_loc([{startPos, len} = spl | tail]), 
-    do: do_calc_serial_loc(tail, startPos, spl, [len])
-  
-  defp do_calc_serial_loc([{_pos, len} = posLen | tail], sp, _pl, lenList), 
-    do: do_calc_serial_loc(tail, sp, posLen, [len | lenList])
-  defp do_calc_serial_loc([], startPos, {lastPos, lastLen}, lenList), 
-    do: {startPos, lastPos + lastLen - startPos, lenList}
-    
-  
-  ## flow
-  ## split_serial_result/2 -> split_serial_result/3 <-> split_serial_result/6 -> split_serial_result/3
-  defp split_serial_result(lenList, binList),
-    do: split_serial_result(lenList, binList, [])
-    
-  defp split_serial_result([rLenList | rlTail], [bin | bTail], result),
-    do: split_serial_result(rLenList, bin, byte_size(bin), result, rlTail, bTail)
-  defp split_serial_result([], [], result), 
-    do: result
-    
-  defp split_serial_result([len|lTail], bin, bs, result, rlTail, bTail) do
-    nextBs = bs-len
-    <<remain::binary-size(nextBs), rBin::binary-size(len)>> = bin
-    split_serial_result(lTail, remain, nextBs, [rBin|result], rlTail, bTail)
-  end
-  defp split_serial_result([], _b, 0, result, rlTail, bTail),
-    do: split_serial_result(rlTail, bTail, result)
   
   
   
@@ -391,7 +339,7 @@ defmodule Pica do
   ## reversed result
   defp set_key_list([key | kTail], result) do
     case key do
-      {from, to} when from < @maxPk and to < @maxPk and from <= to ->
+      {from, to} when from < @maxPk and to < @maxPk and to >= from and from >= 0 ->
         set_key_list(kTail, [get_read_range(from, to) | result])
       key when key < @maxPk ->
         set_key_list(kTail, [get_read_range(key, key) | result])
@@ -573,7 +521,7 @@ defmodule Pica do
 end
 
 
-# """
+"""
 
 defmodule Pica.Test do
   
@@ -581,7 +529,7 @@ defmodule Pica.Test do
   alias :lists,   as: L
   alias :math,    as: Math
   
-  alias OPica, as: Pica
+  # alias OPica, as: Pica
   
   @subKeyBit   18
   @keyBit      @subKeyBit * 2
@@ -620,13 +568,13 @@ defmodule Pica.Test do
       pica 
     end
     
-    """
+    
     {t2, {:ok, count1}} = :timer.tc fn() ->
       do_check_test(pica, startPk, n, 0)
     end
     :io.format 'get loop end time>> ~p~n', [t2]
     :io.format 'get loop end count>> ~p~n~n', [count1]
-    """
+    
     
     {t3, count2} = :timer.tc fn() ->
       s_read_test(pica, startPk, n, 0)
@@ -689,6 +637,18 @@ defmodule Pica.Test do
   end
   
   
+  def s_read_test_2(p, s, n), do: s_read_test_2(p, s, n, 0)
+  def s_read_test_2(_pica, _start, n, n), do: n
+  def s_read_test_2(pica, start, n, c) do
+    from = start + c
+    to = if (from + @mReadV) < (start + n) do from + @mReadV else start + n - 1 end
+    
+    {:ok, result} = Pica.get pica, {from, to}
+    
+    nextC = check_s_read_test(result, c)
+    s_read_test_2(pica, start, n, nextC)
+  end
+  
   
   defp check_s_read_test([], c), do: c
   defp check_s_read_test([b|tail], c) do
@@ -703,4 +663,4 @@ defmodule Pica.Test do
 
 end
 
-# """
+"""
