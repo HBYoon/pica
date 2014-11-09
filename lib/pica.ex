@@ -8,6 +8,7 @@ defmodule Pica do
   
   require Record
   
+  
   ## set your own version
   @version     1
   @versionByte 2
@@ -40,7 +41,8 @@ defmodule Pica do
   @fullHeader  @offsetTable + @header + @footer
   @fhBit       @fullHeader * 8
   
-  Record.defrecordp :pica_rec,
+  
+  Record.defrecord :pica_rec,
                     [ block: 0,
                       data: 0,
                       blockOffset: 0,
@@ -62,6 +64,8 @@ defmodule Pica do
     quote do: ( case unquote(result), do: unquote(withErrCase) )
   end
   
+  
+  
   @doc"""
     close file
     
@@ -73,6 +77,7 @@ defmodule Pica do
     do: F.close(fd)
   
   
+  
   @doc"""
     append data to pica file
     
@@ -81,7 +86,6 @@ defmodule Pica do
     ->
     {:ok, pica} | {:error, :eof} | {:error, reason}
   """
-  
   def append( pica_rec() = pica, binList ) when is_list(binList) do
     
     pica_rec( block: b, 
@@ -114,7 +118,6 @@ defmodule Pica do
     |> build_append_data(tail, [offWriter | offWriterList], [binWriter | binWriterList])
   end
   
-  
   ## append next block
   @headerArea @fullHeader - 1
   defp build_append_data({block, @maxKey, bOff, dOff}, binList, owList, bwList) 
@@ -135,6 +138,13 @@ defmodule Pica do
   
   
   
+  defp pack_offset(n), 
+    do: calc_offset_crc(n) |> do_pack_offset(n)
+  defp do_pack_offset(crc, n), 
+    do: <<crc :: @crcBit, n :: @offBit>>
+  
+  
+  
   defp pack_writer_list([{position, bin} | tail]), 
     do: do_pack_writer_list(tail, [{position, [bin]}])
   defp pack_writer_list([]), 
@@ -152,18 +162,9 @@ defmodule Pica do
   
   
   
-  
-  defp pack_offset(n), 
-    do: calc_offset_crc(n) |> do_pack_offset(n)
-  defp do_pack_offset(crc, n), 
-    do: <<crc :: @crcBit, n :: @offBit>>
-  
   @doc"""
     set the pica record to the past position
     this is part of rollback method idea
-    but, rollback function is not yet developed
-    
-    so, do not use this function for critical issue
     
     pica
     pk :: integer
@@ -313,6 +314,7 @@ defmodule Pica do
   end
   
   
+  
   @doc"""
     read real offset value from disk
     reversed list variable has prefix r
@@ -401,6 +403,7 @@ defmodule Pica do
   defp set_result_data_offset([], [], result), do: {:ok, result}
   
   
+  
   @doc"""
     return sub key and offset
     
@@ -476,7 +479,8 @@ defmodule Pica do
     return_err current_pk(pica),
       do: ( cpk -> cpk - 1 )
   end
-
+  
+  
   
   @doc"""
     get current inserting pk
