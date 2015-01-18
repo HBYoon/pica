@@ -118,6 +118,9 @@ defmodule Pica do
     |> build_append_data(tail, [offWriter | offWriterList], [binWriter | binWriterList])
   end
   
+  defp build_append_data(state, [], owList, bwList), 
+    do: {state, pack_writer_list(owList), pack_writer_list(bwList)}
+  
   ## append next block
   @headerArea @fullHeader - 1
   defp build_append_data({block, @maxKey, bOff, dOff}, binList, owList, bwList) 
@@ -125,14 +128,11 @@ defmodule Pica do
     nextOff     =  bOff + dOff
     blockWriter = {calc_offset_pos(0, block), pack_offset(nextOff)}
     
-    nextOwList = [{nextOff + @headerArea, <<0>>}, blockWriter | owList]
+    nextOwList = [blockWriter | owList]
     
     {block + 1, 0, nextOff, @fullHeader}
     |> build_append_data(binList, nextOwList, bwList)
   end
-  
-  defp build_append_data(state, [], owList, bwList), 
-    do: {state, pack_writer_list(owList), pack_writer_list(bwList)}
   
   defp build_append_data(_s, _bl, _owl, _bwl), do: {:error, :eof}
   
@@ -504,8 +504,12 @@ defmodule Pica do
       do: ( {:ok, {{b, _}, {d, _}}} -> to_pk(b, d) )
   end
   
-  defp to_pk(block, data), do: 
-    to_pk(<<block:: @subKeyBit, data:: @subKeyBit>>)
+  defp to_pk(@maxKey, _),
+    do: @maxPk
+  defp to_pk(block, @maxKey),
+    do: to_pk(block + 1, 0)
+  defp to_pk(block, data), 
+    do: to_pk(<<block:: @subKeyBit, data:: @subKeyBit>>)
   defp to_pk(<<pk:: @keyBit>>), 
     do: pk
   
@@ -542,7 +546,7 @@ defmodule Pica.Test do
   
   @mReadV      1000
   
-  @restart     5000
+  @restart     1
   
   def start(name, number, appendNum \\ 1), 
     do: do_main_test(name, number, appendNum)
@@ -557,7 +561,7 @@ defmodule Pica.Test do
     :io.format 'test start from ~p ~n', [startPk]
     
     {t1, {:ok, pica}} = :timer.tc fn() ->
-      do_loop_append_test(pica, name, :crypto.strong_rand_bytes(2048), startPk, n, 0, appendNum)
+      do_loop_append_test(pica, name, :crypto.strong_rand_bytes(65535), startPk, n, 0, appendNum)
     end
     :io.format 'append loop end time>> ~p~n~n', [t1]
     
@@ -601,6 +605,10 @@ defmodule Pica.Test do
     
     {:ok, pica} = Pica.append(pica, data)
     if rem(n, @restart) == 0 do
+      
+      # pk = Pica.last_pk pica
+      # :io.format "restart: ~p~n", [pk]
+      
       Pica.close(pica)
       {:ok, pica} = Pica.open(name)
       
@@ -612,7 +620,7 @@ defmodule Pica.Test do
   
   defp create_append_test_data(current, 0,_bin, r), do: {current, L.reverse(r)}
   defp create_append_test_data(c, n, bin, r) do
-    data = {c, :binary.part( bin, 0, :crypto.rand_uniform(1, 2048) )}
+    data = {c, :binary.part( bin, 0, :crypto.rand_uniform(1, 32768) )}
     dPack = Erlang.term_to_binary(data)
     crc = Erlang.crc32(dPack)
     create_append_test_data(c + 1, n - 1, bin, [<<crc::32, dPack::binary>> | r])
@@ -621,7 +629,6 @@ defmodule Pica.Test do
   defp do_check_test(_p, _s, n, n), do: {:ok, n}
   defp do_check_test(pica, start, n, current = c) do
     {:ok, [b]} = Pica.get pica, (start + c)
-    
     
     {^current, _bin} = d_check(b)
     
