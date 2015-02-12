@@ -75,6 +75,8 @@ defmodule Pica do
   """
   def close(pica_rec( file: fd )), 
     do: F.close(fd)
+  def close(fd),
+    do: F.close(fd)
   
   
   
