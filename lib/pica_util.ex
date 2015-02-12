@@ -51,7 +51,7 @@ defmodule Pica.Util do
     scan from first appended elements
   """
   def scan_left(pica, func) do
-    scan_left(func, pica, 250)
+    scan_left(pica, 250, func)
   end
   
   def scan_left(pica, unit, func) do
