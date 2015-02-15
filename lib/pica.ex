@@ -234,8 +234,10 @@ defmodule Pica do
     ->
     {:ok, [data]} | {:error, :eof} | {:error, reason}
   """
-  def get(pi = pica_rec( file: fd ), pk) do
-    return_err get_location(pi, pk), 
+  def get(pi = pica_rec( file: fd ), pk), 
+    do: get(fd, pk)
+  def get(fd, pk) do
+    return_err get_location(fd, pk), 
       do: ( {:ok, locList} -> F.pread(fd, locList |> L.flatten) )
   end
   
