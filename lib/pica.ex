@@ -173,16 +173,21 @@ defmodule Pica do
     ->
     {:ok, pica} | {:error, :eof} | {:error, reason}
   """
-  def past_to(pica_rec( file: fd ), pk) do
-    return_err read_address(fd, [pk]) do
-      {:ok, [{block, blockOff, [{data, dataOff}, {_,_fin}]}]} ->
-        ^pk = to_pk(block, data)
-        {:ok, pica_rec( block: block, 
-                        data: data, 
-                        blockOffset: blockOff, 
-                        dataOffset: dataOff, 
-                        file: fd )}
-      _other -> {:error, :eof}
+  def past_to(pica_rec( file: fd ), 0), 
+    do: {:ok, set_new_pica(fd)}
+  def past_to(pi = pica_rec( file: fd ), pk) do
+    return_err current_pk(pi) do
+      ^pk -> {:ok, pi}
+      n when n < pk -> 
+        return_err read_address(fd, [pk]) do
+          {:ok, [{block, blockOff, [{data, dataOff}, {_,_fin}]}]} ->
+            ^pk = to_pk(block, data)
+            {:ok, pica_rec( block: block, 
+                            data: data, 
+                            blockOffset: blockOff, 
+                            dataOffset: dataOff, 
+                            file: fd )}
+        end
     end
   end
   
@@ -234,7 +239,7 @@ defmodule Pica do
     ->
     {:ok, [data]} | {:error, :eof} | {:error, reason}
   """
-  def get(pi = pica_rec( file: fd ), pk), 
+  def get(pica_rec( file: fd ), pk), 
     do: get(fd, pk)
   def get(fd, pk) do
     return_err get_location(fd, pk), 
@@ -270,12 +275,15 @@ defmodule Pica do
   defp set_new_file(fd) do
     return_err F.pwrite(fd, [ {0, <<@version :: @versionBit, @idFix, 0 :: @fhBit>>}, 
                               {(@fullHeader * 2) - @fixByte, [0]} ]), 
-      do: {:ok, pica_rec([ block: 0, 
-                           data: 0, 
-                           blockOffset: @fullHeader, 
-                           dataOffset: @fullHeader, 
-                           file: fd])}
+      do: {:ok, set_new_pica(fd)}
   end
+  
+  defp set_new_pica(fd), 
+    do: pica_rec([ block: 0, 
+                   data: 0, 
+                   blockOffset: @fullHeader, 
+                   dataOffset: @fullHeader, 
+                   file: fd ])
   
   defp set_append_file(fd) do
     return_err F.pread(fd, 0, @header) do
