@@ -178,7 +178,7 @@ defmodule Pica do
   def past_to(pi = pica_rec( file: fd ), pk) do
     return_err current_pk(pi) do
       ^pk -> {:ok, pi}
-      n when n < pk -> 
+      n when pk < n -> 
         return_err read_address(fd, [pk]) do
           {:ok, [{block, blockOff, [{data, dataOff}, {_,_fin}]}]} ->
             ^pk = to_pk(block, data)
@@ -188,6 +188,7 @@ defmodule Pica do
                             dataOffset: dataOff, 
                             file: fd )}
         end
+      _over -> {:error, :overflow}
     end
   end
   
