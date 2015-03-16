@@ -481,17 +481,9 @@ defmodule Pica do
     pica
     ->
     pk
-    
-    or
-    
-    IoDevice
-    ->
-    pk | {:error, reason}
   """
-  def last_pk(pica) do
-    return_err current_pk(pica),
-      do: ( cpk -> cpk - 1 )
-  end
+  def last_pk(pica), 
+    do: ( current_pk(pica) - 1 )
   
   
   
@@ -503,18 +495,20 @@ defmodule Pica do
     pica
     ->
     pk
-    
-    or
-    
-    IoDevice
-    ->
-    pk | {:error, reason}
   """
   def current_pk(pica_rec( block: b, data: d )), 
     do: to_pk(b, d)
-  def current_pk(fd) do
+  
+  @doc"""
+    read last pk
+    
+    pica | fd 
+    ->
+    {:ok, pk} | {:error, reason}
+  """
+  def read_last_pk(fd) do
     return_err get_last(fd),
-      do: ( {:ok, {{b, _}, {d, _}}} -> to_pk(b, d) )
+      do: ( {:ok, {{b, _}, {d, _}}} -> {:ok, to_pk(b, d)} )
   end
   
   defp to_pk(@maxKey, _),
