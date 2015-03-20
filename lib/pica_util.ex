@@ -19,7 +19,7 @@ defmodule Pica.Util do
   @doc"""
     scan from last appended elements
   """
-  def scan_right(pica func) do
+  def scan_right(pica, func) do
     scan_right(pica, 250, func)
   end
   
